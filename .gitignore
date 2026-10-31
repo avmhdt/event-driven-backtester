@@ -37,3 +37,6 @@ target/
 .DS_Store
 Thumbs.db
 .env
+
+# Local build spec (kept out of the public repo)
+SPEC.html
