@@ -1,0 +1,39 @@
+# Data: never commit raw or licensed data
+data/
+*.parquet
+*.feather
+*.h5
+*.itch
+*.pcap
+*.gz
+*.zst
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+
+# C++ / Rust / CUDA builds
+build/
+cmake-build-*/
+target/
+*.o
+*.obj
+*.so
+*.dll
+*.pyd
+*.exe
+
+# Editors, OS, secrets
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.env
