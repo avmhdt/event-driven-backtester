@@ -1,0 +1,9 @@
+---
+source: crates/edbt-cli/tests/golden.rs
+expression: "lines.join(\"\\n\")"
+---
+events.log.zst d45e1eadcac6a5c562682177de4bfcc0d30da27720c090a10ccc4ca3648efb46
+fills.parquet 164672adf4dfee4a17c1b02ee526cd767983244478992a55a97a26f39354ec8e
+ledger.parquet a0750caa9abcc2e8c766e7c9acbbe78cde22cbade1d4f715f0fa6d177bdafddd
+orders.parquet 7a481b0bc9a58b4a5848bcab47c2d55a03270d32e338f67d2522c7495429b0db
+summary.json 3f16168a1fb1edf284e867e8cfc7b457ef459e8ea28f884c8c3abbf5f1b5d2fd

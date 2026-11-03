@@ -1,0 +1,80 @@
+# First real-data replay (P-05): one day of Binance USD-M BTCUSDT from the
+# shared crypto capture (read in place via EDBT_EXTERNAL_DATA_ROOTS, e.g.
+# ~/data/crypto-lob-alpha), with the Rust mm_simple at minimum size.
+[run]
+name = "mm_simple_btcusdt_l2"
+mode = "backtest"
+seed = 20261030
+start = "2026-11-02T00:00:00Z"
+end = "2026-11-03T00:00:00Z"
+out_dir = "results/runs"
+event_log = "full"
+
+[data]
+roots = ["data"]
+venue = "binance-usdm"
+symbols = ["BTCUSDT"]
+book = "book_l2"
+trades = true
+instruments = "configs/instruments.toml"
+allow_reorder = false
+warmup_max = "1h"
+
+[latency.feed]
+model = "recorded"
+min_ns = 0
+
+# Placeholders until the testnet measurement in M5 (spec section 10).
+[latency.order]
+model = "lognormal"
+entry_mu = 15.2
+entry_sigma = 0.35
+response_mu = 15.0
+response_sigma = 0.35
+
+[queue]
+model = "prob_power"
+power = 2.0
+trade_through_fills = true
+
+[exchange]
+fill_on_book_cross = true
+consume_liquidity = true
+self_trade_prevention = "cancel_newest"
+
+[fees]
+source = "instruments"
+
+[risk]
+max_position_lots = 100
+max_open_orders = 20
+max_order_qty_lots = 10
+max_order_notional = 50000.0
+max_orders_per_sec = 20
+max_cancels_per_sec = 40
+price_band_bps = 50.0
+kill_max_loss = 500.0
+kill_max_drawdown = 300.0
+# Recording outages are data gaps (the book is invalid until the next
+# snapshot), not a live feed failure: the stale-feed trigger is for live runs.
+kill_stale_feed_ms = 0
+kill_reject_burst = 10
+flatten_on_kill = false
+
+[ledger]
+initial_cash = 100000.0
+quote_currency = "USDT"
+mark = "mid"
+mark_interval = "1s"
+on_violation = "abort"
+
+[strategy]
+kind = "rust"
+path = "mm_simple"
+
+[strategy.params]
+half_spread_ticks = 1
+order_qty = 0.001
+max_inventory = 0.01
+skew_ticks_per_unit = 100.0
+refresh_ns = 100_000_000

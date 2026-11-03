@@ -31,3 +31,41 @@ maker_bps = -0.5
 taker_bps = 2.0
 effective_from = "2020-01-01"
 source = "synthetic generator convention"
+
+# Binance USD-M perpetuals (mainnet recordings in the shared crypto capture).
+# Copied from crypto-lob-alpha config/instruments.yaml: tick and lot sizes
+# from GET https://fapi.binance.com/fapi/v1/exchangeInfo, fees from
+# https://www.binance.com/en/fee/futureFee (USDT-M, Regular User), both read
+# by that project on 2026-11-01.
+[[instrument]]
+venue = "binance-usdm"
+symbol = "BTCUSDT"
+tick_size = 0.1
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = 2.0
+taker_bps = 5.0
+effective_from = "2026-11-01"
+source = "crypto-lob-alpha config/instruments.yaml: fapi/v1/exchangeInfo; binance.com/en/fee/futureFee, read 2026-11-01"
+
+[[instrument]]
+venue = "binance-usdm"
+symbol = "ETHUSDT"
+tick_size = 0.01
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = 2.0
+taker_bps = 5.0
+effective_from = "2026-11-01"
+source = "crypto-lob-alpha config/instruments.yaml: fapi/v1/exchangeInfo; binance.com/en/fee/futureFee, read 2026-11-01"
+
+[[instrument]]
+venue = "binance-usdm"
+symbol = "SOLUSDT"
+tick_size = 0.01
+lot_size = 0.01
+contract_type = "linear_perp"
+maker_bps = 2.0
+taker_bps = 5.0
+effective_from = "2026-11-01"
+source = "crypto-lob-alpha config/instruments.yaml: fapi/v1/exchangeInfo; binance.com/en/fee/futureFee, read 2026-11-01"

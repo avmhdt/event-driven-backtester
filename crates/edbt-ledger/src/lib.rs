@@ -4,6 +4,7 @@
 //! and prices `i64` ticks. Reconciliation identities hold by integer
 //! equality after every event.
 #![warn(clippy::pedantic)]
+#![cfg_attr(test, allow(clippy::pedantic))]
 
 pub mod fixed;
 pub mod ledger;

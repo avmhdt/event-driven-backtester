@@ -72,9 +72,11 @@ test-data:
 test-testnet:
     {{py}} pytest -m testnet
 
-# Coverage with the NFR-06 thresholds (raised to target in M3).
-cov rust_min="0" py_min="0":
+# Coverage with the NFR-06 thresholds.
+cov rust_min="85" py_min="85":
     cargo llvm-cov nextest --workspace --exclude edbt-py --locked --ignore-filename-regex "edbt-cli/src/main.rs" --fail-under-lines {{rust_min}}
+    cargo llvm-cov report --ignore-filename-regex "edbt-cli/src/main.rs" --summary-only > /tmp/edbt-coverage-summary.txt
+    python3 scripts/check_crate_coverage.py /tmp/edbt-coverage-summary.txt edbt-exchange=90 edbt-ledger=90
     {{py}} pytest -m "not data and not testnet" --cov=edbt --cov-report=term-missing --cov-fail-under={{py_min}}
 
 # Everything CI gates on.
@@ -111,6 +113,16 @@ verify-ac-w-02:
     cargo nextest run -p edbt-core --test determinism same_seed_identical_hash
     @echo "AC-W-02: PASS (engine aborts on any violation; see summary.json reconciliation_violations)"
 
+# AC-W-03: every fill rule has its named test; scenarios and fill rules pass.
+verify-ac-w-03:
+    python3 scripts/check_fill_rule_coverage.py
+    cargo nextest run -p edbt-exchange
+
+# AC-W-06 (simulation side): every risk rule accepts and rejects; kill switch.
+verify-ac-w-06:
+    cargo nextest run -p edbt-risk
+    cargo nextest run -p edbt-core --test oms_state_machine
+
 # AC-W-04: ordering proptests (10,000 cases each).
 verify-ac-w-04:
     cargo nextest run -p edbt-core --test ordering
@@ -125,6 +137,23 @@ verify-ac-w-08:
     "$e" run --config configs/backtest_synthetic.toml --set 'data.roots=["_ac_w_08/data"]' --out _ac_w_08/run --no-log-experiment | tail -1
     "$e" log verify --run _ac_w_08/run
     "$e" replay-check --run _ac_w_08/run
+
+# AC-W-01/02/08/09 on one real L2 day (local; needs the shared crypto capture).
+verify-real-day date="2026-11-02":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --release -p edbt-cli
+    e="$CARGO_TARGET_DIR/release/edbt"
+    x="${EDBT_EXTERNAL_DATA_ROOTS:?set EDBT_EXTERNAL_DATA_ROOTS to the crypto capture root}"
+    r="{{data_root}}/runs/real-{{date}}"
+    rm -rf "$r"
+    for run in a b; do "$e" run --config configs/backtest_l2_btcusdt.toml --out "$r/$run" --no-log-experiment | tail -2; done
+    for f in config.resolved.toml events.log.zst fills.parquet ledger.parquet orders.parquet summary.json; do cmp "$r/a/$f" "$r/b/$f"; done
+    echo "AC-W-01 real day: PASS (identical run files)"
+    "$e" log verify --run "$r/a"
+    "$e" replay-check --run "$r/a"
+    for ds in book_l2 trades; do "$e" data validate --dataset "$ds" --root "${x%%:*}" --venue binance-usdm --symbol BTCUSDT --date {{date}} | tail -1; done
+    "$e" data bbo --root "${x%%:*}" --venue binance-usdm --symbol BTCUSDT --date {{date}} --compare "${x%%:*}"
 
 # AC-W-09: fixtures validate with 0 hard failures; L3 aggregation equals the L2 book.
 verify-ac-w-09:

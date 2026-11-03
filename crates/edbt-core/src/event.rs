@@ -112,6 +112,9 @@ pub struct SourceStats {
     pub latency_out_of_range: u64,
     /// Rows re-sorted under `data.allow_reorder` (DQ-03).
     pub reordered: u64,
+    /// Rows whose receive time stepped back by at most 1 s while the
+    /// producer's order key kept increasing (a host clock step, DQ-03).
+    pub clock_regressions: u64,
     /// Rows skipped before the warm-up window.
     pub skipped: u64,
 }

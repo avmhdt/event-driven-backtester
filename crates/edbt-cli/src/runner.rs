@@ -11,14 +11,16 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, anyhow, bail};
 use edbt_core::clock::SimClock;
 use edbt_core::config::{BookKind, Config, StrategyKind};
+use edbt_core::config::{FeeSource, FeedModel, OrderModel};
 use edbt_core::context::SymbolSpec;
 use edbt_core::engine::{Engine, RunOutput};
 use edbt_core::strategy::Strategy;
 use edbt_core::time::compact_utc;
 use edbt_data::instruments::{Instrument, InstrumentTable};
 use edbt_data::merge::{BookData, ReplaySource, ReplaySpec};
-use edbt_exchange::latency::feed_model;
-use edbt_exchange::sim_gateway::SimGateway;
+use edbt_exchange::fees::{FeeSchedule, FeeVersion};
+use edbt_exchange::latency::{OrderLatencySample, feed_model, order_model};
+use edbt_exchange::sim_gateway::{SimGateway, SimSymbol};
 use serde_json::json;
 
 use crate::output;
@@ -128,14 +130,87 @@ pub fn build_source(cfg: &Config, insts: &[Instrument]) -> anyhow::Result<Replay
     Ok(ReplaySource::open(&spec)?)
 }
 
+fn read_i64_columns(path: &Path, cols: &[&str]) -> anyhow::Result<Vec<Vec<i64>>> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int64Type;
+    let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(f)?.build()?;
+    let mut out = vec![Vec::new(); cols.len()];
+    for batch in reader {
+        let b = batch?;
+        for (i, c) in cols.iter().enumerate() {
+            let a = b
+                .column_by_name(c)
+                .and_then(|a| a.as_primitive_opt::<Int64Type>())
+                .ok_or_else(|| anyhow!("{}: missing int64 column {c}", path.display()))?;
+            out[i].extend(a.values().iter().copied());
+        }
+    }
+    Ok(out)
+}
+
+/// Load measured order latencies (`order_latency` schema) for the
+/// `empirical` and `interpolated` models.
+///
+/// # Errors
+/// I/O and schema errors.
+pub fn load_order_latency(path: &Path) -> anyhow::Result<Vec<OrderLatencySample>> {
+    let c = read_i64_columns(path, &["ts_req_local", "entry_ns", "response_ns"])?;
+    Ok((0..c[0].len())
+        .map(|i| OrderLatencySample { ts_send: c[0][i], entry_ns: c[1][i].max(0), response_ns: c[2][i].max(0) })
+        .collect())
+}
+
+/// Ticks of an instrument's fee rate in micro-bps.
+fn ubps(bps: f64) -> anyhow::Result<i64> {
+    edbt_data::instruments::to_units(bps, 1e-6)
+        .ok_or_else(|| anyhow!("fee rate {bps} bps is not a multiple of 1e-6 bps"))
+}
+
 /// Build the simulated exchange.
 ///
 /// # Errors
-/// Latency-model configuration errors.
-pub fn build_gateway(cfg: &Config, specs: &[SymbolSpec]) -> anyhow::Result<SimGateway> {
-    let feed = feed_model(&cfg.latency.feed, None)?;
-    let l3: Vec<bool> = specs.iter().map(|s| s.l3).collect();
-    Ok(SimGateway::new(&l3, feed, cfg.run.seed))
+/// Latency-model configuration errors and missing latency files.
+pub fn build_gateway(cfg: &Config, specs: &[SymbolSpec], table: &InstrumentTable) -> anyhow::Result<SimGateway> {
+    let feed_samples = match (cfg.latency.feed.model, &cfg.latency.feed.file) {
+        (FeedModel::Empirical, Some(f)) => Some(read_i64_columns(&expand(f), &["latency_ns"])?.remove(0)),
+        _ => None,
+    };
+    let feed = feed_model(&cfg.latency.feed, feed_samples)?;
+    let order_samples = match (cfg.latency.order.model, &cfg.latency.order.file) {
+        (OrderModel::Empirical | OrderModel::Interpolated, Some(f)) => Some(load_order_latency(&expand(f))?),
+        _ => None,
+    };
+    let order = order_model(&cfg.latency.order, order_samples)?;
+    let mut syms = Vec::new();
+    for s in specs {
+        let fees = match cfg.fees.source {
+            FeeSource::Override => FeeSchedule::flat(
+                ubps(
+                    cfg.fees
+                        .maker_bps
+                        .ok_or_else(|| anyhow!("fees.maker_bps is required with fees.source = \"override\""))?,
+                )?,
+                ubps(
+                    cfg.fees
+                        .taker_bps
+                        .ok_or_else(|| anyhow!("fees.taker_bps is required with fees.source = \"override\""))?,
+                )?,
+            ),
+            FeeSource::Instruments => FeeSchedule::new(
+                table
+                    .versions(&cfg.data.venue, &s.name)
+                    .map(|v| FeeVersion {
+                        effective_from: v.effective_from,
+                        maker_ubps: v.maker_ubps,
+                        taker_ubps: v.taker_ubps,
+                    })
+                    .collect(),
+            ),
+        };
+        syms.push(SimSymbol { l3: s.l3, nq_per_tick_lot: s.nq_per_tick_lot, fees });
+    }
+    Ok(SimGateway::new(syms, feed, order, &cfg.queue, cfg.exchange.clone(), cfg.run.seed))
 }
 
 /// Build a registered Rust strategy from the config.
@@ -205,7 +280,7 @@ pub fn run_into(cfg: &Config, strategy: &mut dyn Strategy, out_dir: &Path, run_i
     let insts = instruments_for(cfg, &table)?;
     let specs = symbol_specs(cfg, &insts);
     let source = build_source(cfg, &insts)?;
-    let gateway = build_gateway(cfg, &specs)?;
+    let gateway = build_gateway(cfg, &specs, &table)?;
     std::fs::write(out_dir.join("config.resolved.toml"), cfg.to_toml()?)?;
     let log_path = out_dir.join("events.log.zst");
     let clock = SimClock::new(cfg.start_ns()?.unwrap_or(0));

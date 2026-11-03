@@ -107,6 +107,7 @@ struct RowIter<R: CanonicalRow> {
     key: fn(&R) -> (i64, i64),
     prev: Option<(i64, i64)>,
     reordered: u64,
+    clock_regressions: u64,
 }
 
 impl<R: CanonicalRow> RowIter<R> {
@@ -120,6 +121,7 @@ impl<R: CanonicalRow> RowIter<R> {
             key,
             prev: None,
             reordered: 0,
+            clock_regressions: 0,
         }
     }
 
@@ -168,11 +170,15 @@ impl<R: CanonicalRow> RowIter<R> {
         let Some(r) = self.buf.pop_front() else { return Ok(None) };
         let k = (self.key)(&r);
         if let Some(p) = self.prev {
-            if k < p {
-                return Err(DataError::Order {
-                    path: PathBuf::from(path_hint),
-                    msg: format!("row key {k:?} after {p:?} (set data.allow_reorder = true to sort)"),
-                });
+            match crate::validate::order_check(p, k) {
+                crate::validate::OrderCheck::Ok => {}
+                crate::validate::OrderCheck::ClockRegression => self.clock_regressions += 1,
+                crate::validate::OrderCheck::Violation => {
+                    return Err(DataError::Order {
+                        path: PathBuf::from(path_hint),
+                        msg: format!("row key {k:?} after {p:?} (set data.allow_reorder = true to sort)"),
+                    });
+                }
             }
         }
         self.prev = Some(k);
@@ -217,7 +223,7 @@ fn l2_key(r: &L2Row) -> (i64, i64) {
     (r.ts_recv, r.batch_id)
 }
 fn trade_key(r: &TradeRow) -> (i64, i64) {
-    (r.ts_recv, 0)
+    (r.ts_recv, i64::try_from(r.trade_id).unwrap_or(i64::MAX))
 }
 fn l3_key(r: &L3Row) -> (i64, i64) {
     (r.ts_exchange, 0)
@@ -417,6 +423,18 @@ impl ReplaySource {
         Ok(())
     }
 
+    /// Receive-clock regressions tolerated so far (see `validate::order_check`).
+    fn clock_regressions(&self) -> u64 {
+        self.streams
+            .iter()
+            .map(|s| match &s.kind {
+                StreamKind::L2(st) => st.rows.clock_regressions,
+                StreamKind::Trades(r) => r.clock_regressions,
+                StreamKind::L3(r) => r.clock_regressions,
+            })
+            .sum()
+    }
+
     /// Rows re-sorted under `allow_reorder` so far.
     fn reordered(&self) -> u64 {
         self.streams
@@ -458,7 +476,7 @@ impl EventSource for ReplaySource {
     }
 
     fn stats(&self) -> SourceStats {
-        SourceStats { reordered: self.reordered(), ..self.stats }
+        SourceStats { reordered: self.reordered(), clock_regressions: self.clock_regressions(), ..self.stats }
     }
 }
 
@@ -588,7 +606,7 @@ effective_from = "2020-01-01"
 
         let dir2 = tempfile::tempdir().unwrap();
         let mut w = crate::schema::PartitionWriter::<L2Row>::new(dir2.path(), "synthetic", "SYN");
-        for r in [row(1, 10, None, true, 5), row(2, 11, Some(10), false, 3)] {
+        for r in [row(1, 10, None, true, 5), row(0, 11, Some(10), false, 3)] {
             w.push(r).unwrap();
         }
         w.finish().unwrap();

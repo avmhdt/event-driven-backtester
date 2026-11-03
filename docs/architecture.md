@@ -51,10 +51,12 @@ is inspected, only after the batch's last row.
    if its subscriptions ask for it.
 4. After every event the ledger is reconciled (FR-16).
 
-Orders (M3) follow the same pattern: `Context::submit` runs the order manager
-and risk checks, the gateway schedules the arrival at the exchange after the
-entry latency (rank 1), matches it there, and schedules responses back at
-local time (rank 2).
+Orders follow the same pattern: `Context::submit` runs the order manager and
+the `edbt-risk` checks, the gateway schedules the arrival at the exchange
+after the entry latency (rank 1), matches it there, and schedules responses
+back at local time (rank 2). The order manager applies a fill to the ledger,
+then calls `on_fill`, then `on_order_update`. See `fill_rules.md`,
+`queue_models.md` and `latency_models.md`.
 
 ## Run directory
 

@@ -1,0 +1,45 @@
+---
+source: crates/edbt-cli/tests/golden.rs
+expression: summary
+---
+{
+  "book_crossed": 0,
+  "book_gaps": 0,
+  "data_quality": {
+    "clock_regressions": 0,
+    "latency_out_of_range": 0,
+    "off_grid": 0,
+    "reordered": 0,
+    "rows": 3000,
+    "skipped_before_warmup": 0
+  },
+  "fees_total": "-0.000114956",
+  "fees_total_f": -0.000114956,
+  "fill_ratio": 0.8846153846153846,
+  "final_positions": {
+    "SYN": 0.001
+  },
+  "final_positions_lots": {
+    "SYN": 1
+  },
+  "kill_switch_triggered": false,
+  "maker_fill_share": 1.0,
+  "max_drawdown": "0.000045000",
+  "max_drawdown_f": 0.000045,
+  "n_cancels": 1,
+  "n_events": 6077,
+  "n_fills": 23,
+  "n_orders": 26,
+  "n_rejects": 0,
+  "pnl_realized": "0.000100000",
+  "pnl_realized_f": 0.0001,
+  "pnl_total": "0.000204956",
+  "pnl_total_f": 0.000204956,
+  "pnl_unrealized": "-0.000010000",
+  "pnl_unrealized_f": -0.00001,
+  "rebates_total": "0.000114956",
+  "rebates_total_f": 0.000114956,
+  "reconciliation_violations": 0,
+  "traded_notional": "2.299190000",
+  "traded_notional_f": 2.29919
+}

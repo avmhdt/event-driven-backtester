@@ -10,6 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-risk.workspace = true
 edbt-book.workspace = true
 edbt-ledger.workspace = true
 serde.workspace = true

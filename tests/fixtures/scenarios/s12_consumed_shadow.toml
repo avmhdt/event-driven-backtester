@@ -1,0 +1,58 @@
+# Hand-computed fill scenario (AC-W-03). Prices in ticks of 0.01, sizes in
+# lots of 1, so one lot at one tick is 0.01 quote = 10,000,000 nano-quote.
+# Fees: maker -0.5 bps -> -500 nq per tick-lot; taker 2 bps -> 2,000 nq per
+# tick-lot. Runner: crates/edbt-exchange/tests/scenarios.rs.
+
+name = "s12_consumed_shadow"
+rule = "consumed_liquidity_not_refilled_until_level_update"
+description = "Two IOC buys at 101 for 2: the second finds the level already consumed. After a feed update of 101 a third fills."
+
+[setup]
+
+[[events]]
+t = 0
+kind = "snapshot"
+bids = [[100, 5], [99, 4]]
+asks = [[101, 2], [102, 3], [104, 5]]
+[[events]]
+t = 10
+kind = "order"
+ref = "A"
+side = "buy"
+type = "limit"
+tif = "ioc"
+qty = 2
+price = 101
+[[events]]
+t = 20
+kind = "order"
+ref = "B"
+side = "buy"
+type = "limit"
+tif = "ioc"
+qty = 2
+price = 101
+[[events]]
+t = 30
+kind = "level"
+side = "ask"
+price = 101
+qty = 2
+[[events]]
+t = 40
+kind = "order"
+ref = "C"
+side = "buy"
+type = "limit"
+tif = "ioc"
+qty = 1
+price = 101
+[[expected]]
+ref = "A"
+responses = ["accepted", "fill 101 2 taker 404000"]
+[[expected]]
+ref = "B"
+responses = ["accepted", "expired IOC_REMAINDER"]
+[[expected]]
+ref = "C"
+responses = ["accepted", "fill 101 1 taker 202000"]

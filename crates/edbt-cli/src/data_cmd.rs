@@ -69,10 +69,11 @@ pub fn run(cmd: DataCmd) -> anyhow::Result<i32> {
             let report = validate_dataset(&root, dataset.dir(), &filter, &table)?;
             for f in &report.files {
                 println!(
-                    "{} rows={} order_violations={} negative_latency={} latency_gt_10s={} off_grid_price={} off_grid_qty={}{}{}",
+                    "{} rows={} order_violations={} clock_regressions={} negative_latency={} latency_gt_10s={} off_grid_price={} off_grid_qty={}{}{}",
                     f.path.display(),
                     f.rows,
                     f.order_violations,
+                    f.clock_regressions,
                     f.negative_latency,
                     f.excessive_latency,
                     f.off_grid_price,
@@ -103,9 +104,30 @@ pub fn run(cmd: DataCmd) -> anyhow::Result<i32> {
             }
             Ok(i32::from(hard > 0))
         }
-        DataCmd::Bbo { .. } => {
-            eprintln!("edbt data bbo: not implemented yet (arrives in M2)");
-            Ok(2)
+        DataCmd::Bbo { root, out, compare, instruments, venue, symbol, date } => {
+            let table = InstrumentTable::load(&instruments)?;
+            let day = edbt_core::time::parse_rfc3339(&date)?;
+            let inst = table
+                .get(&venue, &symbol, day)
+                .ok_or_else(|| anyhow::anyhow!("no instrument for {venue}/{symbol} on {date}"))?
+                .clone();
+            let c =
+                edbt_data::bbo::derive(&[root], &venue, &symbol, &inst, day, out.as_deref(), compare.as_deref(), 20)?;
+            println!("batches={} written={}", c.batches, c.written);
+            if compare.is_some() {
+                println!(
+                    "compared={} matched={} match_rate={:.6} skipped_invalid={}",
+                    c.compared,
+                    c.matched,
+                    c.match_rate(),
+                    c.skipped_invalid
+                );
+                for (seq, want, got) in &c.mismatches {
+                    println!("mismatch seq={seq} source={want:?} reconstructed={got:?}");
+                }
+                return Ok(i32::from(c.compared == 0 || c.match_rate() < 0.9999));
+            }
+            Ok(0)
         }
     }
 }

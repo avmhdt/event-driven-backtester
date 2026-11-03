@@ -12,6 +12,7 @@
 
 use edbt_core::clock::SimClock;
 use edbt_core::config::Config;
+use edbt_core::config::{ExchangeCfg, QueueCfg};
 use edbt_core::context::{Context, SymbolSpec};
 use edbt_core::engine::Engine;
 use edbt_core::event::{BATCH_END, BATCH_START, MarketEvent, MarketKind, SNAPSHOT, VecSource};
@@ -19,8 +20,9 @@ use edbt_core::order::Side;
 use edbt_core::queue::{Key, Popped, Scheduled, Scheduler, TimerId};
 use edbt_core::strategy::{BookSubscription, BookView, Strategy as EngineStrategy, Subscriptions, Trade};
 use edbt_core::{Nanos, Rank, SymbolId};
-use edbt_exchange::latency::{FeedLatency, LogNormalFeed, RecordedFeed};
-use edbt_exchange::sim_gateway::SimGateway;
+use edbt_exchange::fees::FeeSchedule;
+use edbt_exchange::latency::{ConstantOrder, FeedLatency, LogNormalFeed, RecordedFeed};
+use edbt_exchange::sim_gateway::{SimGateway, SimSymbol};
 use proptest::prelude::*;
 
 fn spec() -> Vec<SymbolSpec> {
@@ -80,7 +82,14 @@ impl EngineStrategy for Recorder {
 }
 
 fn run(evs: Vec<MarketEvent>, feed: Box<dyn FeedLatency>, seed: u64) -> Recorder {
-    let gw = SimGateway::new(&[false], feed, seed);
+    let gw = SimGateway::new(
+        vec![SimSymbol { l3: false, nq_per_tick_lot: 10_000, fees: FeeSchedule::default() }],
+        feed,
+        Box::new(ConstantOrder { entry_ns: 0, response_ns: 0 }),
+        &QueueCfg::default(),
+        ExchangeCfg::default(),
+        seed,
+    );
     let mut e = Engine::new(&cfg(), spec(), None, VecSource::new(evs), gw, SimClock::new(0)).unwrap();
     let mut r = Recorder::default();
     e.run(&mut r).unwrap();
@@ -172,5 +181,74 @@ proptest! {
         prop_assert!(r.books.windows(2).all(|w| w[0].0 <= w[1].0 && w[0].2 < w[1].2));
         prop_assert!(r.trades.windows(2).all(|w| w[0].0 <= w[1].0 && w[0].2 < w[1].2));
         prop_assert_eq!(r.books.len() + r.trades.len(), st.len() + 1);
+    }
+}
+
+mod fills {
+    //! `fill_not_before_arrival`: no order is filled before `ts_send + entry`.
+    use super::*;
+    use edbt_core::order::{NewOrder, OrdType, TimeInForce};
+
+    struct Sender {
+        times: Vec<Nanos>,
+        sent: Vec<(u64, Nanos)>,
+        fills: Vec<(u64, Nanos, Nanos)>,
+    }
+
+    impl EngineStrategy for Sender {
+        fn on_start(&mut self, ctx: &mut dyn Context) {
+            for t in &self.times {
+                ctx.set_timer(*t, None);
+            }
+        }
+        fn on_timer(&mut self, ctx: &mut dyn Context, id: TimerId) {
+            let side = if id.0 % 2 == 0 { Side::Buy } else { Side::Sell };
+            let price = if side == Side::Buy { 1_000_010 } else { 1 };
+            let tif = if id.0 % 3 == 0 { TimeInForce::Gtc } else { TimeInForce::Ioc };
+            let req = NewOrder {
+                symbol: SymbolId(0),
+                side,
+                ord_type: OrdType::Limit,
+                tif,
+                price: Some(price),
+                qty: 1,
+                tag: None,
+            };
+            if let Ok(o) = ctx.submit(req) {
+                self.sent.push((o.0, ctx.now()));
+            }
+        }
+        fn on_fill(&mut self, _ctx: &mut dyn Context, f: &edbt_core::order::Fill) {
+            self.fills.push((f.client_order_id.0, f.ts_exchange, f.ts_local));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10_000))]
+
+        #[test]
+        fn fill_not_before_arrival(entry in 0_i64..5_000, response in 0_i64..5_000,
+                                   st in steps(), times in proptest::collection::vec(0_i64..60_000, 1..12)) {
+            let mut evs = events(&st);
+            // A deep ask so aggressive buys fill on arrival; sells hit the bids.
+            evs[0] = MarketEvent { kind: MarketKind::L2 { side: Side::Sell, price: 1_000_000, qty: 1_000, seq: 0, flags: BATCH_START | BATCH_END | SNAPSHOT }, ..evs[0] };
+            let cfg = Config::from_toml_str("[run]\nevent_log = \"off\"\n[risk]\nprice_band_bps = 0.0\nmax_open_orders = 100\nmax_orders_per_sec = 0\n").unwrap();
+            let gw = SimGateway::new(
+                vec![SimSymbol { l3: false, nq_per_tick_lot: 10_000, fees: FeeSchedule::default() }],
+                Box::new(RecordedFeed { min_ns: 0 }),
+                Box::new(ConstantOrder { entry_ns: entry, response_ns: response }),
+                &QueueCfg::default(),
+                ExchangeCfg::default(),
+                1,
+            );
+            let mut e = Engine::new(&cfg, spec(), None, VecSource::new(evs), gw, SimClock::new(0)).unwrap();
+            let mut s = Sender { times, sent: Vec::new(), fills: Vec::new() };
+            e.run(&mut s).unwrap();
+            for (id, ts_exch, ts_local) in &s.fills {
+                let sent = s.sent.iter().find(|(i, _)| i == id).unwrap().1;
+                prop_assert!(*ts_exch >= sent + entry, "fill at {} before arrival {}", ts_exch, sent + entry);
+                prop_assert!(*ts_local >= *ts_exch + response);
+            }
+        }
     }
 }

@@ -233,11 +233,20 @@ pub enum DataCmd {
         #[arg(long, default_value = "configs/instruments.toml")]
         instruments: PathBuf,
     },
-    /// Derive canonical bbo from book_l2.
+    /// Derive canonical bbo from book_l2; optionally compare with a source bbo.
     Bbo {
-        /// Data root.
+        /// Data root of the book_l2 dataset (read-only).
         #[arg(long)]
         root: PathBuf,
+        /// Where to write the derived bbo partition (never a sibling root).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Root holding a source bbo dataset to compare against (AC-W-09).
+        #[arg(long)]
+        compare: Option<PathBuf>,
+        /// Instrument file.
+        #[arg(long, default_value = "configs/instruments.toml")]
+        instruments: PathBuf,
         /// Venue.
         #[arg(long)]
         venue: String,
