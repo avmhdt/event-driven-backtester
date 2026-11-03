@@ -50,3 +50,5 @@ reports/_cache/
 .coverage
 coverage.xml
 lcov.info
+_determinism/
+_ac_w_08/

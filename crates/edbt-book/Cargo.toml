@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 
 [dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -140,3 +140,46 @@ release of each crate that still builds on Rust 1.85.
   `results/testnet_ping.csv`.
 - **2026-11-03 (M1) `rustfmt.toml`.** `max_width = 120` with
   `use_small_heuristics = "Max"`.
+- **2026-11-03 (M2) Scheduler layout.** Exchange-side market data comes
+  straight from the source (its `seq` is taken when the engine pulls it),
+  local market data waits in one FIFO per feed stream, and everything else
+  sits in a binary heap; the engine takes the smallest `(ts, rank, seq)`
+  across them. This is the spec's total order with fewer heap operations.
+- **2026-11-03 (M2) Feed latency per message.** Feed latency is sampled once
+  per venue message (an L2 batch, a trade, an L3 event), so the rows of one
+  batch arrive together; `recorded` latency is `ts_recv` minus the effective
+  `ts_exchange`, which reproduces the recorded receive time.
+- **2026-11-03 (M2) Tie order between streams.** At equal effective exchange
+  time the replay emits a symbol's trades before its book rows, so a trade
+  and the depth update that reflects it reach the queue models in causal
+  order.
+- **2026-11-03 (M2) Gap rule.** A `book_l2` batch is a gap (DQ-04) when the
+  producer's `seq_prev` does not equal the previous batch's `seq`. The first
+  incremental batch after a snapshot is not checked (Binance's first diff
+  after a snapshot only has to straddle `lastUpdateId`). Without `seq_prev`
+  there is no gap detection.
+- **2026-11-03 (M2) Rejected L2 rows.** An off-grid `book_l2` row (DQ-05) is
+  counted and kept as a `NOOP` row so its batch boundaries still apply.
+- **2026-11-03 (M2) Warm-up.** Rows from `run.start - data.warmup_max` are
+  replayed into both books without strategy callbacks; the strategy's
+  `on_start` runs at the first event at or after `run.start`. A book is
+  valid only after a snapshot (DQ-11).
+- **2026-11-03 (M2) Mark price.** `ledger.mark = "mid"` marks at the local
+  mid, rounded half-even to a whole tick so the ledger stays integer; the
+  mark only changes on valid books.
+- **2026-11-03 (M2) Ledger rows.** `ledger.parquet` gets a row per symbol at
+  each `ledger.mark_interval` boundary crossed (stamped at the boundary,
+  describing the state before the event that crossed it), after every fill
+  (M3) and at the end of the run. Empty intervals do not produce rows.
+- **2026-11-03 (M2) Event-log seq.** `seq` in the event log, `orders.parquet`,
+  `fills.parquet` and `ledger.parquet` is the engine's record counter. Under
+  `event_log = "orders_only"` market records are skipped but still counted,
+  so the seqs in the other files stay comparable.
+- **2026-11-03 (M2) Money columns.** Nano-quote amounts are `int64` in the
+  run Parquet files (up to about 9.2e9 quote units) and the writer fails on
+  overflow rather than wrapping.
+- **2026-11-03 (M2) Synthetic generator fix.** The fixture cross-check
+  (`crates/edbt-data/tests/fixtures_l3_l2.rs`) found that the generator did
+  not reduce a level's total when an execution or cancel emptied an order,
+  so its `book_l2` output overstated sizes. Fixed before any golden hash
+  existed, and the committed fixtures were regenerated (`just fixtures`).

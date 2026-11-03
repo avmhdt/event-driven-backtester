@@ -5,5 +5,8 @@
 
 pub mod cli;
 pub mod data_cmd;
+pub mod log_cmd;
+pub mod output;
+pub mod runner;
 
 pub use cli::{Cli, run_cli};

@@ -24,3 +24,6 @@ missing_docs = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 float_cmp = "deny"
+# Not a simulation crate: wall clocks and threads are allowed here (NFR-04).
+disallowed_methods = "allow"
+disallowed_types = "allow"

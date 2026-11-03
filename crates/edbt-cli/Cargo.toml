@@ -17,6 +17,15 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
+edbt-exchange.workspace = true
+edbt-strategies.workspace = true
+edbt-ledger.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+parquet.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+tempfile.workspace = true
 edbt-core.workspace = true
 edbt-data.workspace = true
 clap.workspace = true
@@ -32,3 +41,6 @@ missing_docs = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 float_cmp = "deny"
+# Not a simulation crate: wall clocks and threads are allowed here (NFR-04).
+disallowed_methods = "allow"
+disallowed_types = "allow"

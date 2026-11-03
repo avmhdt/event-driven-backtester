@@ -280,6 +280,34 @@ fn not_yet(what: &str, milestone: &str) -> anyhow::Result<i32> {
     Ok(2)
 }
 
+fn run_cmd(a: &RunArgs) -> anyhow::Result<i32> {
+    use crate::runner;
+    let cfg = runner::resolve(runner::load_config(&a.config, a.seed, &a.set)?);
+    if cfg.run.mode != edbt_core::order::Mode::Backtest {
+        anyhow::bail!("run.mode = {:?}: use `edbt live` for paper and testnet sessions", cfg.run.mode.as_str());
+    }
+    let id = runner::run_id(&cfg)?;
+    let out = a.out.clone().unwrap_or_else(|| runner::expand(&cfg.run.out_dir).join(&id));
+    let mut strategy = runner::build_strategy(&cfg)?;
+    let r = runner::run_into(&cfg, strategy.as_mut(), &out, &id)?;
+    if !a.no_log_experiment {
+        runner::log_experiment(&runner::results_dir(), &cfg, &r)?;
+    }
+    let s = &r.output.summary;
+    println!("run_id     {}", r.run_id);
+    println!("out_dir    {}", r.out_dir.display());
+    println!("events     {} ({:.0} events/s)", s.n_events, r.events_per_s);
+    println!("orders     {}  fills {}  rejects {}", s.n_orders, s.n_fills, s.n_rejects);
+    println!(
+        "pnl        {}  fees {}",
+        edbt_ledger::fixed::format_nq(s.pnl_total),
+        edbt_ledger::fixed::format_nq(s.fees_total)
+    );
+    println!("recon      {} violations, book gaps {}", s.reconciliation_violations, s.book_gaps);
+    println!("run_hash   {}", r.run_hash);
+    Ok(0)
+}
+
 /// Parse `args` (including the program name) and run the command. Returns
 /// the process exit code.
 ///
@@ -300,9 +328,11 @@ where
     };
     match cli.command {
         Command::Data(cmd) => crate::data_cmd::run(cmd),
-        Command::Run(_) => not_yet("run", "M2"),
-        Command::ReplayCheck(_) => not_yet("replay-check", "M2"),
-        Command::Log(_) => not_yet("log", "M2"),
+        Command::Run(a) => run_cmd(&a),
+        Command::ReplayCheck(a) => crate::log_cmd::replay_check(&a.run),
+        Command::Log(LogCmd::Inspect(a)) => crate::log_cmd::inspect(&a),
+        Command::Log(LogCmd::Verify(a)) => crate::log_cmd::verify(&a),
+        Command::Log(LogCmd::ReplayStrategy(_)) => not_yet("log replay-strategy", "M5"),
         Command::Bench(_) => not_yet("bench", "M4"),
         Command::Live(_) | Command::Kill(_) => not_yet("live", "M5"),
         Command::Latency(_) => not_yet("latency", "M5"),

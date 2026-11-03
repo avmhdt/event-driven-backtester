@@ -10,8 +10,13 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-core.workspace = true
+edbt-book.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
