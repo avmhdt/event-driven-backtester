@@ -1,0 +1,23 @@
+# Binance USD-M futures TESTNET session settings. The full session config
+# (strategy, risk, ledger) arrives in M5; URLs are verified against the
+# current Binance docs and `just testnet-ping` in M5 and recorded in
+# docs/decisions.md. Mainnet hosts are refused at load by the host guard.
+
+[run]
+mode = "testnet"
+
+[live]
+venue = "binance-usdm-testnet"
+rest_url = "https://testnet.binancefuture.com"            # VERIFY at M5 (spec 7a)
+ws_market_url = "wss://stream.binancefuture.com"          # VERIFY at M5
+ws_api_url = "wss://testnet.binancefuture.com/ws-fapi/v1" # VERIFY at M5; optional channel
+allowed_hosts = ["testnet.binancefuture.com", "stream.binancefuture.com",
+                 "fstream.binancefuture.com", "demo-fapi.binance.com", "demo-fstream.binance.com"]
+# Additional REST base URLs that `just testnet-ping` checks for reachability.
+ping_urls = ["https://testnet.binancefuture.com", "https://demo-fapi.binance.com"]
+order_channel = "rest"
+depth_stream = "depth@100ms"
+record = true
+record_dir = "data"
+recv_window_ms = 5000
+clock_sync_interval_s = 60

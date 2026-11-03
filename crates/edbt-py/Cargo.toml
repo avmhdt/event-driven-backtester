@@ -1,0 +1,29 @@
+[package]
+name = "edbt-py"
+description = "PyO3 bindings exposed to Python as edbt._edbt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "_edbt"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+edbt-cli.workspace = true
+pyo3.workspace = true
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+float_cmp = "deny"

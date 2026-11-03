@@ -1,0 +1,26 @@
+[package]
+name = "edbt-live"
+description = "Binance USD-M futures testnet adapter, recorder, latency measurement and host guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+edbt-core.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+float_cmp = "deny"

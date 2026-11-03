@@ -40,3 +40,13 @@ Thumbs.db
 
 # Local build spec (kept out of the public repo)
 SPEC.html
+
+# event-driven-backtester
+/data
+results/runs
+results/runs/
+results/live/
+reports/_cache/
+.coverage
+coverage.xml
+lcov.info

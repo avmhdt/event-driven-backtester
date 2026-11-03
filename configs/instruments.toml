@@ -1,0 +1,33 @@
+# Point-in-time instrument metadata (DQ-07). One [[instrument]] table per
+# version; the version in force is the latest with effective_from <= ts.
+# Fees are never typed in from memory: every real-venue entry records its
+# source (endpoint or published schedule) and the date it was checked.
+# Fields: venue, symbol, tick_size, lot_size, contract_type (linear_perp |
+# equity), maker_bps, taker_bps (negative maker = rebate), effective_from,
+# optional min_notional, contract_mult (default 1), l3_price_unit (producer
+# price unit of book_l3.price_ticks; default tick_size), source.
+
+# Synthetic venue written by `edbt data synth` (fees are the generator's own
+# convention, chosen to exercise both a maker rebate and a taker fee).
+[[instrument]]
+venue = "synthetic"
+symbol = "SYN"
+tick_size = 0.01
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = -0.5
+taker_bps = 2.0
+effective_from = "2020-01-01"
+source = "synthetic generator convention"
+
+# Synthetic L3 fixture symbol (order-level stream of the same generator).
+[[instrument]]
+venue = "synthetic"
+symbol = "SYN3"
+tick_size = 0.01
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = -0.5
+taker_bps = 2.0
+effective_from = "2020-01-01"
+source = "synthetic generator convention"

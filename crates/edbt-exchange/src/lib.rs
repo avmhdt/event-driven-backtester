@@ -1,0 +1,9 @@
+//! The simulated exchange: aggressive matching, consumed-liquidity shadow,
+//! latency models, queue-position models and fees.
+
+pub mod fees;
+pub mod latency;
+pub mod matching;
+pub mod queue;
+pub mod shadow;
+pub mod sim_gateway;

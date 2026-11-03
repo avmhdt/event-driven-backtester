@@ -1,0 +1,14 @@
+# NFR-04: simulation crates never read wall clocks, spawn threads or depend on
+# hash-map iteration order. Crates that legitimately need these (edbt-live,
+# edbt-cli, edbt-py) do not inherit the workspace lint table that denies them.
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "sim crates use event time (NFR-04)" },
+  { path = "std::time::Instant::now", reason = "sim crates use event time (NFR-04)" },
+  { path = "std::thread::spawn", reason = "sim crates are single-threaded (NFR-04)" },
+]
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap or Vec (NFR-04)" },
+  { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet or Vec (NFR-04)" },
+]
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
