@@ -167,6 +167,43 @@ verify-ac-w-09:
     cargo nextest run -p edbt-data --test fixtures_l3_l2
     cargo nextest run -p edbt-book --test l3_l2_prop
 
+# AC-W-11: the Python API contract, stubs and strict typing.
+verify-ac-w-11:
+    {{py}} pytest tests/python/test_api_contract.py
+    {{py}} python -m mypy.stubtest edbt._edbt
+    {{py}} mypy
+    {{py}} mypy --strict strategies
+    @grep -q '^API_VERSION = "1\.' python/edbt/__init__.py && echo "API_VERSION 1.x"
+
+# Criterion benchmarks (local numbers only; see reports/throughput.md).
+bench:
+    cargo bench -p edbt-core --bench engine
+
+# AC-H-03 / FR-27: throughput of every Rust and Python path. Publish only on
+# the reference machine with no multi-week capture running (D-08).
+study-throughput:
+    cargo build -q --release -p edbt-cli
+    sed 's|^edbt = .*|edbt = "'"$CARGO_TARGET_DIR"'/release/edbt"|' configs/studies/throughput.toml > /tmp/edbt-throughput.toml
+    {{py}} edbt-study throughput --config /tmp/edbt-throughput.toml --out reports
+    cat reports/hardware.md
+
+verify-ac-h-03: study-throughput
+
+# AC-H-07: build the wheel, install it into a clean venv, run the quickstart.
+verify-ac-h-07:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    uvx maturin build --release --out "$tmp/dist"
+    uv venv -q --python 3.12 "$tmp/venv"
+    VIRTUAL_ENV="$tmp/venv" uv pip install -q "$tmp"/dist/*.whl
+    cd "$tmp" && start=$(date +%s) && "$tmp/venv/bin/python" -m edbt.examples.quickstart
+    echo "quickstart took $(( $(date +%s) - start ))s"
+
+# Synthetic backtest with summary in under a minute.
+quickstart:
+    {{py}} python -m edbt.examples.quickstart
+
 # Unsigned GET /fapi/v1/time against the configured testnet REST hosts (no keys).
 testnet-ping:
     {{py}} python scripts/testnet_ping.py configs/live_testnet.toml results/testnet_ping.csv

@@ -1,0 +1,75 @@
+name: wheels
+
+# FR-32 / AC-H-07: build the abi3 wheel (Python >= 3.12) for Linux x86_64
+# (manylinux) and Windows amd64, install it into a clean venv and run the
+# quickstart. Publishing to PyPI is not configured: D-03 says build only.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/wheels.yml"
+      - "pyproject.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "python/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            manylinux: auto
+          - os: windows-latest
+            manylinux: "off"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+
+  quickstart:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist
+      - name: Install into a clean venv and run the quickstart (< 60 s)
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ -x "$RUNNER_TEMP/venv/Scripts/python.exe" ]; then PY="$RUNNER_TEMP/venv/Scripts/python.exe"; else PY="$RUNNER_TEMP/venv/bin/python"; fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          start=$(date +%s)
+          "$PY" -m edbt.examples.quickstart
+          elapsed=$(( $(date +%s) - start ))
+          echo "quickstart took ${elapsed}s"
+          [ "$elapsed" -lt 60 ]
+          "$PY" -c "import edbt; print(edbt.__version__, edbt.API_VERSION)"

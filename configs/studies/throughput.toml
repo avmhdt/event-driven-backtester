@@ -1,0 +1,7 @@
+# Throughput study (FR-27, AC-H-03): `just study-throughput`.
+# Published numbers come only from the reference machine with no multi-week
+# capture running on it (D-08), from a release build.
+[throughput]
+events = 20000000   # synthetic L2 rows (about 40M engine events)
+reps = 5
+edbt = "edbt"       # the release binary; the justfile passes its path

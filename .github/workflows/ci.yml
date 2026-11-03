@@ -52,7 +52,9 @@ jobs:
           uv run --frozen ruff check python tests/python scripts strategies
           uv run --frozen ruff format --check python tests/python scripts strategies
       - name: mypy --strict
-        run: uv run --frozen mypy
+        run: |
+          uv run --frozen mypy
+          uv run --frozen mypy --strict strategies
       - name: stubtest
         run: uv run --frozen python -m mypy.stubtest edbt._edbt
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -160,6 +162,37 @@ jobs:
             echo "Linux and Windows run hashes differ (reported, not gating)"
             jq -n --slurpfile l determinism-ubuntu-latest/hashes.json --slurpfile w determinism-windows-latest/hashes.json               '$l[0].files | to_entries | map(select(.value != $w[0].files[.key]) | .key)'
           fi
+
+  # Not gating: smoke-runs the benchmarks. Numbers from shared runners are
+  # not performance claims (spec section 16).
+  bench-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: criterion --quick
+        run: cargo bench -p edbt-core --bench engine -- --quick
+      - name: edbt bench and the Python throughput study on 1M synthetic rows
+        env:
+          MATURIN_PEP517_ARGS: ""
+        run: |
+          cargo build --release --locked -p edbt-cli
+          ./target/release/edbt bench --mode engine --strategy noop --events 1000000 --reps 3
+          ./target/release/edbt bench --mode e2e --strategy mm_simple --events 1000000 --reps 3
+          uv sync --python 3.12 --locked
+          {
+            echo '[throughput]'
+            echo 'events = 1000000'
+            echo 'reps = 2'
+            echo "edbt = \"$PWD/target/release/edbt\""
+          } > "$RUNNER_TEMP/thr.toml"
+          uv run --frozen edbt-study throughput --config "$RUNNER_TEMP/thr.toml" --out "$RUNNER_TEMP/reports"
+          cat "$RUNNER_TEMP/reports/throughput.md"
 
   # The single required status check for branch protection.
   ci:

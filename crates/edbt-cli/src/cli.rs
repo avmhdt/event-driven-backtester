@@ -92,6 +92,9 @@ pub struct BenchArgs {
     /// Repetitions.
     #[arg(long, default_value_t = 5)]
     pub reps: u32,
+    /// Event log during the benchmark: off or full.
+    #[arg(long, default_value = "off")]
+    pub event_log: String,
 }
 
 /// `edbt live`.
@@ -342,7 +345,7 @@ where
         Command::Log(LogCmd::Inspect(a)) => crate::log_cmd::inspect(&a),
         Command::Log(LogCmd::Verify(a)) => crate::log_cmd::verify(&a),
         Command::Log(LogCmd::ReplayStrategy(_)) => not_yet("log replay-strategy", "M5"),
-        Command::Bench(_) => not_yet("bench", "M4"),
+        Command::Bench(a) => crate::bench::run(&a),
         Command::Live(_) | Command::Kill(_) => not_yet("live", "M5"),
         Command::Latency(_) => not_yet("latency", "M5"),
     }

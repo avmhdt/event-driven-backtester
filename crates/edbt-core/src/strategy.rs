@@ -127,4 +127,9 @@ pub trait Strategy {
     fn on_risk_event(&mut self, _ctx: &mut dyn Context, _e: &RiskEvent) {}
     /// Called once at the end.
     fn on_stop(&mut self, _ctx: &mut dyn Context) {}
+    /// An error raised inside a callback (a Python exception), taken by the
+    /// engine after each event; the run then aborts with it (NFR-07).
+    fn take_error(&mut self) -> Option<String> {
+        None
+    }
 }

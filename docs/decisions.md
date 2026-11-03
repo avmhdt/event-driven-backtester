@@ -243,3 +243,33 @@ release of each crate that still builds on Rust 1.85.
 - **2026-11-03 (M3) Golden snapshots.** `tests/golden/` holds `summary.json`
   and the hashes of every run file except `config.resolved.toml` (which
   contains temp paths) for three fixture scenarios.
+- **2026-11-03 (M4) One unsafe block.** A Python callback's `Context` holds a
+  lifetime-erased pointer to the engine's context, set for exactly the
+  duration of the callback and cleared by a drop guard; every use checks it,
+  so a context or `BookView` kept after its callback raises `EdbtError`
+  instead of reading freed state. `edbt-py` is the only crate with unsafe
+  code (spec NFR-07); everything else forbids it.
+- **2026-11-03 (M4) Depth arrays are small copies.** `BookView.depth()` and
+  `depth_ticks()` return read-only NumPy arrays built from the top `levels`
+  of the book on each call. A true zero-copy view would have to expose the
+  engine's book storage beyond the callback's borrow, which only unsafe code
+  could do; copying at most `levels` rows costs well under a microsecond and
+  keeps the binding safe. FR-20's "zero-copy depth views" is therefore met in
+  spirit (no per-event allocation unless the strategy asks for depth), not
+  literally.
+- **2026-11-03 (M4) Exact float parsing.** The Python `Config` hands its
+  values to Rust as JSON. `serde_json` is built with `float_roundtrip`, after
+  the config round-trip property test found a float that came back one ULP
+  off without it, which would have changed the config hash.
+- **2026-11-03 (M4) Python strategy errors.** The `Strategy` trait gained
+  `take_error`; the engine checks it after every event and aborts, and
+  `run_backtest` re-raises the original Python exception with its traceback.
+- **2026-11-03 (M4) Console script.** `edbt run` on a config with
+  `strategy.kind = "python"` is handled by the Python wrapper (it needs the
+  Python class); every other command runs in the Rust CLI.
+- **2026-11-03 (M4) Benchmarks not published yet.** D-08 says published
+  benchmark runs wait until no multi-week capture runs on this PC, and the
+  crypto capture's 14-day count started on 2026-11-03. The harness (`edbt
+  bench`, criterion benches, `edbt-study throughput`) is merged and was run
+  locally to check it works; `reports/throughput.md` holds no numbers until
+  the reference run.

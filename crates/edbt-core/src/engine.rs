@@ -923,6 +923,9 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
         if let Some(e) = self.core.error.take() {
             return Err(e);
         }
+        if let Some(e) = strategy.take_error() {
+            return Err(EngineError::Strategy(e));
+        }
         self.n_events += 1;
         self.kill_fired |= self.core.risk.kill.killed();
         self.reconcile(key.ts)?;
@@ -1168,6 +1171,9 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
         }
         self.core.log(Payload::Stop)?;
         self.finished = true;
+        if let Some(e) = strategy.take_error() {
+            return Err(EngineError::Strategy(e));
+        }
         Ok(())
     }
 
@@ -1276,6 +1282,18 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
     /// A context for code outside callbacks (the Python stepping API).
     pub fn context(&mut self) -> impl Context + '_ {
         self.ctx()
+    }
+
+    /// Configured symbols.
+    #[must_use]
+    pub fn symbols(&self) -> &[SymbolSpec] {
+        &self.core.symbols
+    }
+
+    /// Whether the run has finished.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.finished
     }
 
     /// The gateway (tests and live adapters).
