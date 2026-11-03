@@ -24,11 +24,16 @@ zstd.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 edbt-cli.workspace = true
 edbt-data.workspace = true
 edbt-exchange.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "engine"
+harness = false
 
 [lints]
 workspace = true

@@ -3,6 +3,7 @@
 //! The parser and command implementations live in this library so that the
 //! Python wheel can expose the same CLI as a console script.
 
+pub mod bench;
 pub mod cli;
 pub mod data_cmd;
 pub mod log_cmd;

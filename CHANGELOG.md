@@ -6,6 +6,19 @@ against `edbt` (`docs/python_api.md`). `edbt.API_VERSION` follows semver
 
 ## Unreleased
 
+### M4: Python API 1.0.0 and throughput
+
+- **[API] 1.0.0 for `market-making-sim`.** The full section 10 surface:
+  `Strategy`, `Context`, `BookView`, `Config`, `run_backtest`, `Backtest`
+  (stepping), `run_live` (validates; sessions arrive in M5), `load_result`,
+  `BacktestResult` with Polars tables, the enums, dataclasses and errors, and
+  `edbt._edbt` stubs. Contract in `docs/python_api.md`.
+- Python `strategies/` (noop, mm_simple, taker_imbalance); the Python and
+  Rust `mm_simple` produce byte-identical run files on fixture data.
+- `edbt bench`, criterion benchmarks, `edbt-study throughput`.
+- Wheels workflow (Linux manylinux and Windows, abi3) with a clean-venv
+  quickstart.
+
 ### M3: simulated exchange and risk
 
 - Order manager with the FR-07 state machine, cancel-replace and fills

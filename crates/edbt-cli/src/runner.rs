@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, anyhow, bail};
 use edbt_core::clock::SimClock;
-use edbt_core::config::{BookKind, Config, StrategyKind};
+use edbt_core::config::{BookKind, Config, ConfigError, StrategyKind};
 use edbt_core::config::{FeeSource, FeedModel, OrderModel};
 use edbt_core::context::SymbolSpec;
 use edbt_core::engine::{Engine, RunOutput};
@@ -79,7 +79,9 @@ pub fn instruments_for(cfg: &Config, table: &InstrumentTable) -> anyhow::Result<
             Some(s) => table.get(&cfg.data.venue, sym, s),
             None => versions.first().copied(),
         }
-        .ok_or_else(|| anyhow!("no instrument for {}/{sym} in {}", cfg.data.venue, cfg.data.instruments))?;
+        .ok_or_else(|| {
+            ConfigError::Invalid(format!("no instrument for {}/{sym} in {}", cfg.data.venue, cfg.data.instruments))
+        })?;
         for v in &versions {
             let inside = start.is_none_or(|s| v.effective_from > s) && end.is_none_or(|e| v.effective_from < e);
             #[allow(clippy::float_cmp)]
@@ -275,6 +277,22 @@ fn host() -> String {
 /// Any setup, data, engine or I/O error.
 #[allow(clippy::cast_precision_loss)]
 pub fn run_into(cfg: &Config, strategy: &mut dyn Strategy, out_dir: &Path, run_id: &str) -> anyhow::Result<RunResult> {
+    let (mut engine, specs) = build_engine(cfg, out_dir)?;
+    let t0 = Instant::now();
+    let output = engine.run(strategy)?;
+    let wall = t0.elapsed().as_secs_f64();
+    write_outputs(&specs, out_dir, run_id, output, wall, 0)
+}
+
+/// The engine type of a backtest.
+pub type BacktestEngine = Engine<ReplaySource, SimGateway, SimClock>;
+
+/// Build a backtest engine whose run files go to `out_dir` (created; the
+/// resolved config is written now, the event log as the run proceeds).
+///
+/// # Errors
+/// Config, instrument, data and I/O errors.
+pub fn build_engine(cfg: &Config, out_dir: &Path) -> anyhow::Result<(BacktestEngine, Vec<SymbolSpec>)> {
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let table = InstrumentTable::load(&expand(&cfg.data.instruments))?;
     let insts = instruments_for(cfg, &table)?;
@@ -284,14 +302,27 @@ pub fn run_into(cfg: &Config, strategy: &mut dyn Strategy, out_dir: &Path, run_i
     std::fs::write(out_dir.join("config.resolved.toml"), cfg.to_toml()?)?;
     let log_path = out_dir.join("events.log.zst");
     let clock = SimClock::new(cfg.start_ns()?.unwrap_or(0));
-    let t0 = Instant::now();
-    let mut engine = Engine::new(cfg, specs.clone(), Some(&log_path), source, gateway, clock)?;
-    let output = engine.run(strategy)?;
-    let wall = t0.elapsed().as_secs_f64();
+    let engine = Engine::new(cfg, specs.clone(), Some(&log_path), source, gateway, clock)?;
+    Ok((engine, specs))
+}
+
+/// Write the run files of a finished engine and hash them.
+///
+/// # Errors
+/// I/O and Arrow errors.
+#[allow(clippy::cast_precision_loss)]
+pub fn write_outputs(
+    specs: &[SymbolSpec],
+    out_dir: &Path,
+    run_id: &str,
+    output: RunOutput,
+    wall: f64,
+    python_callbacks: u64,
+) -> anyhow::Result<RunResult> {
     output::write_orders(&out_dir.join("orders.parquet"), &output.orders)?;
     output::write_fills(&out_dir.join("fills.parquet"), &output.fills)?;
-    output::write_ledger(&out_dir.join("ledger.parquet"), &output.ledger, &specs)?;
-    output::write_json(&out_dir.join("summary.json"), &output::summary_json(&output.summary, &specs))?;
+    output::write_ledger(&out_dir.join("ledger.parquet"), &output.ledger, specs)?;
+    output::write_json(&out_dir.join("summary.json"), &output::summary_json(&output.summary, specs))?;
     let events_per_s = if wall > 0.0 { output.summary.n_events as f64 / wall } else { 0.0 };
     output::write_json(
         &out_dir.join("perf.json"),
@@ -299,7 +330,7 @@ pub fn run_into(cfg: &Config, strategy: &mut dyn Strategy, out_dir: &Path, run_i
             "events_processed": output.summary.n_events,
             "wall_time_s": wall,
             "events_per_s": events_per_s,
-            "python_callbacks": 0,
+            "python_callbacks": python_callbacks,
             "peak_rss_mb": peak_rss_mb(),
             "host": host(),
         }),
