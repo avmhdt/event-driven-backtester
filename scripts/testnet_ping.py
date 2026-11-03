@@ -72,8 +72,7 @@ def main(config: str = "configs/live_testnet.toml", out: str = "results/testnet_
     path = Path(out)
     new = not path.exists()
     with path.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f, lineterminator="
-")
+        w = csv.writer(f, lineterminator="\n")
         if new:
             w.writerow(["utc", "url", "http_status", "server_time_ms", "rtt_ms", "note"])
         w.writerows(rows)
