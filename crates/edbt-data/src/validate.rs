@@ -17,6 +17,35 @@ use crate::{DataError, Result};
 /// DQ-02 upper bound on `ts_recv - ts_exchange`.
 pub const MAX_FEED_LATENCY_NS: i64 = 10_000_000_000;
 
+/// Largest receive-time step back accepted as a host clock step, ns.
+pub const MAX_CLOCK_STEP_NS: i64 = 1_000_000_000;
+
+/// Outcome of the replay-order check between consecutive rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderCheck {
+    /// In order.
+    Ok,
+    /// `ts_recv` stepped back by at most [`MAX_CLOCK_STEP_NS`] while the
+    /// producer's own order key (`batch_id`, `trade_id`) kept increasing:
+    /// a host clock step, not a reorder. File order is kept and the row is
+    /// counted (DQ-03).
+    ClockRegression,
+    /// Out of order (DQ-03 hard failure unless `allow_reorder`).
+    Violation,
+}
+
+/// Compare consecutive order keys `(ts, producer key)`.
+#[must_use]
+pub fn order_check(prev: (i64, i64), cur: (i64, i64)) -> OrderCheck {
+    if cur >= prev {
+        OrderCheck::Ok
+    } else if cur.1 > prev.1 && prev.0 - cur.0 <= MAX_CLOCK_STEP_NS {
+        OrderCheck::ClockRegression
+    } else {
+        OrderCheck::Violation
+    }
+}
+
 /// Which partitions to check.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
@@ -39,6 +68,8 @@ pub struct FileReport {
     pub error: Option<String>,
     /// Rows out of replay order (DQ-03).
     pub order_violations: u64,
+    /// Receive-clock steps back tolerated by [`order_check`].
+    pub clock_regressions: u64,
     /// Rows with negative receive latency (DQ-02).
     pub negative_latency: u64,
     /// Rows with receive latency above 10 s (DQ-02).
@@ -132,7 +163,7 @@ impl Checked for TradeRow {
         (self.ts_exchange, self.ts_recv)
     }
     fn order_key(&self) -> (i64, i64) {
-        (self.ts_recv, 0)
+        (self.ts_recv, i64::try_from(self.trade_id).unwrap_or(i64::MAX))
     }
     fn grid(&self, inst: &Instrument) -> (bool, bool) {
         (inst.price_to_ticks(self.price).is_some(), inst.qty_to_lots(self.qty).is_some())
@@ -177,10 +208,14 @@ fn check_file<R: Checked>(path: &Path, inst: Option<&Instrument>) -> FileReport 
         for r in &buf {
             rep.rows += 1;
             let key = r.order_key();
-            if prev.is_some_and(|p| key < p) {
-                rep.order_violations += 1;
+            if let Some(p) = prev {
+                match order_check(p, key) {
+                    OrderCheck::Ok => {}
+                    OrderCheck::ClockRegression => rep.clock_regressions += 1,
+                    OrderCheck::Violation => rep.order_violations += 1,
+                }
             }
-            prev = Some(prev.map_or(key, |p| p.max(key)));
+            prev = Some(key);
             let (te, tr) = r.ts();
             let lat = tr - te;
             if lat < 0 {
@@ -390,7 +425,7 @@ effective_from = "2020-01-01"
         let base = 1_767_225_600_000_000_000_i64;
         let rows = [
             TradeRow { ts_exchange: base, ts_recv: base + 5, trade_id: 1, price: 100.0, qty: 0.001, side: 1 },
-            TradeRow { ts_exchange: base + 9, ts_recv: base + 3, trade_id: 2, price: 100.005, qty: 0.001, side: 1 },
+            TradeRow { ts_exchange: base + 9, ts_recv: base + 3, trade_id: 0, price: 100.005, qty: 0.001, side: 1 },
             TradeRow {
                 ts_exchange: base,
                 ts_recv: base + 20_000_000_000,
@@ -408,6 +443,10 @@ effective_from = "2020-01-01"
         let rep = validate_dataset(dir.path(), "trades", &Filter::default(), &inst).unwrap();
         let f = &rep.files[0];
         assert_eq!(f.order_violations, 1);
+        assert_eq!(order_check((10, 5), (9, 6)), OrderCheck::ClockRegression);
+        assert_eq!(order_check((10, 5), (9, 5)), OrderCheck::Violation);
+        assert_eq!(order_check((2 * MAX_CLOCK_STEP_NS, 5), (0, 6)), OrderCheck::Violation);
+        assert_eq!(order_check((10, 5), (10, 5)), OrderCheck::Ok);
         assert_eq!(f.negative_latency, 1);
         assert_eq!(f.excessive_latency, 1);
         assert_eq!(f.off_grid_price, 1);

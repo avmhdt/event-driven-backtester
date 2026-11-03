@@ -41,6 +41,8 @@ jobs:
           ./gitleaks git --redact --verbose .
       - name: rustfmt
         run: cargo fmt --all --check
+      - name: Fill-rule coverage (AC-W-03)
+        run: python3 scripts/check_fill_rule_coverage.py
       - name: Python env (builds the extension)
         run: uv sync --python 3.12 --locked
       - name: clippy
@@ -111,13 +113,17 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # Thresholds start at 0 and are raised to the NFR-06 targets in M3.
+      # NFR-06: >= 85% workspace lines (edbt-cli main excluded), >= 90% on
+      # edbt-exchange and edbt-ledger, >= 85% on python/edbt (studies excluded).
       - name: Rust line coverage
-        run: cargo llvm-cov nextest --workspace --exclude edbt-py --locked --ignore-filename-regex "edbt-cli/src/main.rs" --fail-under-lines 0
+        run: |
+          cargo llvm-cov nextest --workspace --exclude edbt-py --locked --ignore-filename-regex "edbt-cli/src/main.rs" --fail-under-lines 85
+          cargo llvm-cov report --ignore-filename-regex "edbt-cli/src/main.rs" --summary-only > coverage-summary.txt
+          python3 scripts/check_crate_coverage.py coverage-summary.txt edbt-exchange=90 edbt-ledger=90
       - name: Python line coverage
         run: |
           uv sync --python 3.12 --locked
-          uv run --frozen pytest -m "not data and not testnet" --cov=edbt --cov-report=term-missing --cov-fail-under=0
+          uv run --frozen pytest -m "not data and not testnet" --cov=edbt --cov-report=term-missing --cov-fail-under=85
 
   determinism:
     strategy:

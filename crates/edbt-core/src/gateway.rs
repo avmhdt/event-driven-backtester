@@ -82,6 +82,24 @@ pub struct GatewayStats {
     pub unknown_side_trades: u64,
 }
 
+/// Reject and expiry reason codes.
+pub mod reason {
+    /// The exchange book is invalid (gap, cross, no snapshot yet).
+    pub const BOOK_INVALID: &str = "BOOK_INVALID";
+    /// A post-only order would take liquidity.
+    pub const POST_ONLY_WOULD_CROSS: &str = "POST_ONLY_WOULD_CROSS";
+    /// A fill-or-kill order cannot be filled completely.
+    pub const FOK_NOT_FILLABLE: &str = "FOK_NOT_FILLABLE";
+    /// The unfilled remainder of an IOC order.
+    pub const IOC_REMAINDER: &str = "IOC_REMAINDER";
+    /// The unfilled remainder of a market order.
+    pub const NO_LIQUIDITY: &str = "NO_LIQUIDITY";
+    /// Self-trade prevention cancelled the incoming order.
+    pub const STP: &str = "STP";
+    /// Cancel of an order that is not working (already filled or unknown).
+    pub const UNKNOWN_ORDER: &str = "UNKNOWN_ORDER";
+}
+
 #[doc(hidden)]
 pub mod sealed {
     /// Seals [`super::Gateway`]: implemented only by `edbt-exchange` and

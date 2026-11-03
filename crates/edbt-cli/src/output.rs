@@ -254,6 +254,7 @@ pub fn summary_json(s: &Summary, symbols: &[SymbolSpec]) -> Value {
             "off_grid": s.source.off_grid,
             "latency_out_of_range": s.source.latency_out_of_range,
             "reordered": s.source.reordered,
+            "clock_regressions": s.source.clock_regressions,
             "skipped_before_warmup": s.source.skipped,
         }),
     );

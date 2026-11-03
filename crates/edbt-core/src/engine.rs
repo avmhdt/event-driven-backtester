@@ -20,20 +20,22 @@ use edbt_book::l2::L2Book;
 use edbt_book::l3::L3Book;
 use edbt_book::view::Level;
 use edbt_ledger::fixed::div_round_half_even;
-use edbt_ledger::ledger::Ledger;
+use edbt_ledger::ledger::{Ledger, LedgerFill};
 use edbt_ledger::recon;
+use edbt_risk::checks::{RiskEngine, RiskLimits, RiskOrder, RiskSnapshot};
+use edbt_risk::kill::{KillConfig, KillReason};
 use rand_chacha::ChaCha8Rng;
 
 use crate::clock::Clock;
-use crate::config::{Config, ConfigError, EventLogMode, MarkKind, OnViolationCfg};
+use crate::config::{Config, ConfigError, EventLogMode, MarkKind, OnViolationCfg, RiskCfg};
 use crate::context::{Context, Position, RiskState, SymbolSpec};
 use crate::event::{EventSource, MarketEvent, MarketKind, SourceError, SourceStats};
-use crate::gateway::Gateway;
-use crate::log::{EventLogWriter, LogError, MarketRec, Payload};
+use crate::gateway::{ExchangeResponse, Gateway};
+use crate::log::{EventLogWriter, Intent, LogError, MarketRec, Payload};
 use crate::oms::{FillRow, Oms, OrderRow};
-use crate::order::{InvalidOrder, Mode, NewOrder, OrderUpdate};
+use crate::order::{InvalidOrder, Mode, NewOrder, OrdType, OrderRequest, OrderStatus, OrderUpdate, Side, TimeInForce};
 use crate::queue::{Key, Popped, Scheduled, Scheduler, TimerId};
-use crate::strategy::{BookSubscription, BookView, Strategy, Subscriptions, Trade};
+use crate::strategy::{BookSubscription, BookView, RiskEvent, RiskEventKind, Strategy, Subscriptions, Trade};
 use crate::{ClientOrderId, Lots, NanoQuote, Nanos, Rank, SymbolId, Ticks};
 
 /// Engine errors.
@@ -304,6 +306,10 @@ pub struct Core<G> {
     log_mode: EventLogMode,
     log_seq: u64,
     oms: Oms,
+    risk: RiskEngine,
+    flatten_on_kill: bool,
+    pending_risk_events: Vec<RiskEvent>,
+    error: Option<EngineError>,
     timers: Timers,
     risk_state: RiskState,
     now: Nanos,
@@ -331,6 +337,227 @@ impl<G: Gateway> Core<G> {
         Ok(seq)
     }
 
+    fn refresh_risk_state(&mut self) {
+        let rs = &mut self.risk_state;
+        rs.killed = self.risk.kill.killed();
+        rs.kill_reason = self.risk.kill.reason().map(KillReason::detail);
+        rs.open_orders = u32::try_from(self.oms.open_count()).unwrap_or(u32::MAX);
+        rs.orders_last_sec = self.risk.orders_last_sec();
+        rs.position_lots = self.ledger.positions().iter().map(|p| p.position).collect();
+        rs.session_pnl = self.ledger.equity() - self.ledger.initial_cash();
+    }
+
+    fn keep_error(&mut self, r: Result<(), EngineError>) {
+        if let Err(e) = r {
+            if self.error.is_none() {
+                self.error = Some(e);
+            }
+        }
+    }
+
+    fn intent_new(id: ClientOrderId, req: &NewOrder) -> Payload {
+        Payload::Intent(Intent::New {
+            id: id.0,
+            symbol: req.symbol.0,
+            side: req.side.sign(),
+            ord_type: match req.ord_type {
+                OrdType::Limit => 0,
+                OrdType::Market => 1,
+            },
+            tif: match req.tif {
+                TimeInForce::Gtc => 0,
+                TimeInForce::Ioc => 1,
+                TimeInForce::Fok => 2,
+                TimeInForce::Gtx => 3,
+            },
+            price: req.price,
+            qty: req.qty,
+        })
+    }
+
+    fn validate(&self, req: &NewOrder) -> Result<(), InvalidOrder> {
+        if req.symbol.0 as usize >= self.symbols.len() {
+            return Err(InvalidOrder::UnknownSymbol(req.symbol.0));
+        }
+        if req.qty <= 0 {
+            return Err(InvalidOrder::NonPositiveQty);
+        }
+        match (req.ord_type, req.price) {
+            (OrdType::Limit, Some(p)) if p > 0 => Ok(()),
+            (OrdType::Market, _) => Ok(()),
+            _ => Err(InvalidOrder::InvalidPrice),
+        }
+    }
+
+    /// Order entry: id, risk checks, gateway (FR-07, FR-14).
+    fn submit(&mut self, books: &Books, mut req: NewOrder) -> Result<ClientOrderId, InvalidOrder> {
+        self.validate(&req)?;
+        if req.ord_type == OrdType::Market {
+            req.price = None;
+        }
+        let sym = req.symbol.0 as usize;
+        let view = books.view(req.symbol);
+        let mid_x2 = view.mid_x2();
+        let ref_px = req.price.or_else(|| {
+            let opp = if req.side == Side::Buy { view.best_ask() } else { view.best_bid() };
+            opp.map(|l| l.price).or(mid_x2.map(|m| m / 2))
+        });
+        let notional = i128::from(ref_px.unwrap_or(0)) * i128::from(req.qty) * self.symbols[sym].nq_per_tick_lot;
+        let (open_buy, open_sell) = self.oms.exposure(req.symbol);
+        let snap = RiskSnapshot {
+            position: self.ledger.positions()[sym].position,
+            open_buy,
+            open_sell,
+            open_orders: u32::try_from(self.oms.open_count()).unwrap_or(u32::MAX),
+            book_valid: view.valid,
+        };
+        let order = RiskOrder {
+            symbol: sym,
+            side: req.side.sign(),
+            price: req.price,
+            qty: req.qty,
+            notional_nq: notional.abs(),
+            mid_x2,
+        };
+        let id = self.oms.peek_id();
+        let seq = match self.log(Self::intent_new(id, &req)) {
+            Ok(s) => s,
+            Err(e) => {
+                self.keep_error(Err(e.into()));
+                0
+            }
+        };
+        let id = self.oms.create(&req, self.now);
+        self.oms.row(seq, id);
+        match self.risk.check_new(&order, &snap, self.now) {
+            Err(rej) => {
+                let r = self.log(Payload::Risk { id: id.0, accepted: false, rule: rej.rule.to_owned() });
+                let seq = r.unwrap_or(0);
+                self.oms.reject_local(id, format!("RISK:{}", rej.rule), self.now);
+                self.oms.row(seq, id);
+                self.sched.schedule(
+                    self.now,
+                    Rank::LocalResponse,
+                    Scheduled::RiskReject { id, rule: rej.rule.to_owned() },
+                );
+                if let Some(k) = self.risk.kill.on_reject(self.now) {
+                    let r = self.kill_actions(&k);
+                    self.keep_error(r);
+                }
+            }
+            Ok(()) => {
+                let r = self.log(Payload::Risk { id: id.0, accepted: true, rule: String::new() });
+                self.keep_error(r.map(|_| ()).map_err(Into::into));
+                self.send(id, &req);
+            }
+        }
+        self.refresh_risk_state();
+        Ok(id)
+    }
+
+    fn send(&mut self, id: ClientOrderId, req: &NewOrder) {
+        let wire = OrderRequest {
+            id,
+            symbol: req.symbol,
+            side: req.side,
+            ord_type: req.ord_type,
+            tif: req.tif,
+            price: req.price,
+            qty: req.qty,
+        };
+        self.oms.sent();
+        if let Err(e) = self.gateway.submit(&wire, self.now, &mut self.sched) {
+            let seq = self.log(Payload::Log { msg: e.to_string() }).unwrap_or(0);
+            self.oms.reject_local(id, e.0.clone(), self.now);
+            self.oms.row(seq, id);
+            self.sched.schedule(
+                self.now,
+                Rank::LocalResponse,
+                Scheduled::RiskReject { id, rule: "gateway".to_owned() },
+            );
+        }
+    }
+
+    /// Cancel request; `bypass` skips the cancel-rate check (kill switch).
+    fn send_cancel(&mut self, id: ClientOrderId, bypass: bool) {
+        if self.oms.order(id).is_none_or(|o| o.status.is_terminal() || o.status == OrderStatus::PendingCancel) {
+            return;
+        }
+        if !bypass {
+            if let Err(rej) = self.risk.check_cancel(self.now) {
+                self.pending_risk_events.push(RiskEvent {
+                    kind: RiskEventKind::Warning,
+                    rule: rej.rule.to_owned(),
+                    detail: rej.detail,
+                    client_order_id: Some(id),
+                    ts_local: self.now,
+                });
+                return;
+            }
+        }
+        let seq = match self.log(Payload::Intent(Intent::Cancel { id: id.0 })) {
+            Ok(s) => s,
+            Err(e) => {
+                self.keep_error(Err(e.into()));
+                0
+            }
+        };
+        if self.oms.pending_cancel(id, self.now) {
+            self.oms.row(seq, id);
+            if let Err(e) = self.gateway.cancel(id, self.now, &mut self.sched) {
+                let r = self.log(Payload::Log { msg: e.to_string() });
+                self.keep_error(r.map(|_| ()).map_err(Into::into));
+            }
+        }
+        self.refresh_risk_state();
+    }
+
+    /// After the kill switch fired: cancel everything, optionally flatten,
+    /// tell the strategy (FR-15).
+    fn kill_actions(&mut self, reason: &KillReason) -> Result<(), EngineError> {
+        self.log(Payload::Kill { reason: format!("{}: {}", reason.rule(), reason.detail()) })?;
+        for id in self.oms.open_ids(None) {
+            self.send_cancel(id, true);
+        }
+        if self.flatten_on_kill {
+            for (i, p) in self.ledger.positions().to_vec().iter().enumerate() {
+                if p.position != 0 {
+                    let req = NewOrder {
+                        symbol: SymbolId(u32::try_from(i).unwrap_or(0)),
+                        side: if p.position > 0 { Side::Sell } else { Side::Buy },
+                        ord_type: OrdType::Market,
+                        tif: TimeInForce::Ioc,
+                        price: None,
+                        qty: p.position.abs(),
+                        tag: Some("flatten_on_kill".to_owned()),
+                    };
+                    let id = self.oms.peek_id();
+                    let seq = self.log(Self::intent_new(id, &req))?;
+                    let id = self.oms.create(&req, self.now);
+                    self.oms.row(seq, id);
+                    self.send(id, &req);
+                }
+            }
+        }
+        self.pending_risk_events.push(RiskEvent {
+            kind: RiskEventKind::KillSwitch,
+            rule: reason.rule().to_owned(),
+            detail: reason.detail(),
+            client_order_id: None,
+            ts_local: self.now,
+        });
+        self.refresh_risk_state();
+        Ok(())
+    }
+
+    fn after_pnl_change(&mut self) -> Result<(), EngineError> {
+        let pnl = self.ledger.equity() - self.ledger.initial_cash();
+        if let Some(k) = self.risk.kill.on_pnl(pnl) {
+            self.kill_actions(&k)?;
+        }
+        Ok(())
+    }
+
     fn set_mark(&mut self, sym: usize, mark: Ticks) -> Result<(), EngineError> {
         if self.marks[sym] != Some(mark) {
             self.marks[sym] = Some(mark);
@@ -338,6 +565,9 @@ impl<G: Gateway> Core<G> {
             #[allow(clippy::cast_possible_truncation)]
             self.log(Payload::Mark { symbol: sym as u32, mark })?;
             self.track_equity();
+            if self.ledger.positions()[sym].position != 0 {
+                self.after_pnl_change()?;
+            }
         }
         Ok(())
     }
@@ -414,21 +644,43 @@ impl<G: Gateway> Context for Ctx<'_, G> {
         self.core.oms.order(id)
     }
 
-    fn submit(&mut self, _req: NewOrder) -> Result<ClientOrderId, InvalidOrder> {
-        Err(InvalidOrder::Unsupported("order entry arrives with the order manager (M3)".to_owned()))
+    fn submit(&mut self, req: NewOrder) -> Result<ClientOrderId, InvalidOrder> {
+        self.core.submit(self.books, req)
     }
 
-    fn cancel(&mut self, _id: ClientOrderId) {}
+    fn cancel(&mut self, id: ClientOrderId) {
+        self.core.send_cancel(id, false);
+    }
 
-    fn cancel_all(&mut self, _sym: Option<SymbolId>) {}
+    fn cancel_all(&mut self, sym: Option<SymbolId>) {
+        for id in self.core.oms.open_ids(sym) {
+            self.core.send_cancel(id, false);
+        }
+    }
 
     fn modify(
         &mut self,
-        _id: ClientOrderId,
-        _price: Option<Ticks>,
-        _qty: Option<Lots>,
+        id: ClientOrderId,
+        price: Option<Ticks>,
+        qty: Option<Lots>,
     ) -> Result<ClientOrderId, InvalidOrder> {
-        Err(InvalidOrder::Unsupported("order entry arrives with the order manager (M3)".to_owned()))
+        let old = self.core.oms.order(id).ok_or(InvalidOrder::UnknownOrder(id.0))?;
+        if old.status.is_terminal() || old.status == OrderStatus::PendingCancel {
+            return Err(InvalidOrder::UnknownOrder(id.0));
+        }
+        let req = NewOrder {
+            symbol: old.symbol,
+            side: old.side,
+            ord_type: old.ord_type,
+            tif: old.tif,
+            price: price.or(old.price),
+            qty: qty.unwrap_or(old.leaves),
+            tag: old.tag.clone(),
+        };
+        self.core.validate(&req)?;
+        // Cancel-replace: the new order joins the back of the queue.
+        self.core.send_cancel(id, false);
+        self.core.submit(self.books, req)
     }
 
     fn set_timer(&mut self, at: Nanos, every: Option<Nanos>) -> TimerId {
@@ -459,9 +711,11 @@ impl<G: Gateway> Context for Ctx<'_, G> {
     }
 
     fn kill_switch(&mut self, reason: &str) {
-        self.core.risk_state.killed = true;
-        self.core.risk_state.kill_reason = Some(reason.to_owned());
-        let _ = self.core.log(Payload::Kill { reason: reason.to_owned() });
+        let r = KillReason::Manual(reason.to_owned());
+        if self.core.risk.trigger(r.clone()) {
+            let res = self.core.kill_actions(&r);
+            self.core.keep_error(res);
+        }
     }
 }
 
@@ -492,6 +746,7 @@ pub struct Engine<S, G, C> {
     n_events: u64,
     violations: u64,
     last_event: LastEvent,
+    kill_fired: bool,
 }
 
 impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
@@ -534,7 +789,11 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             log,
             log_mode: cfg.run.event_log,
             log_seq: 0,
-            oms: Oms::new(),
+            oms: Oms::new(symbols.iter().map(|s| s.name.clone()).collect(), cfg.queue.model.as_str()),
+            risk: RiskEngine::new(risk_limits(&cfg.risk)),
+            flatten_on_kill: cfg.risk.flatten_on_kill,
+            pending_risk_events: Vec::new(),
+            error: None,
             timers: Timers::default(),
             risk_state: RiskState { position_lots: vec![0; n], ..RiskState::default() },
             now: params.start.unwrap_or(Nanos::MIN),
@@ -561,6 +820,7 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             n_events: 0,
             violations: 0,
             last_event: LastEvent::None,
+            kill_fired: false,
         })
     }
 
@@ -633,6 +893,11 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
         if self.started && key.ts >= self.next_mark {
             self.periodic_rows(key.ts)?;
         }
+        if self.started {
+            if let Some(k) = self.core.risk.kill.check_stale(key.ts) {
+                self.core.kill_actions(&k)?;
+            }
+        }
         self.last_event = LastEvent::Other;
         let from_source = self.peeked.as_ref().is_some_and(|(k, _)| *k == key);
         if from_source {
@@ -650,21 +915,153 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
                     core.gateway.on_scheduled(token, key.ts, &mut core.sched);
                 }
                 Popped::Scheduled(Scheduled::Timer(id)) => self.timer(id, strategy)?,
-                Popped::Scheduled(Scheduled::Response(r)) => {
-                    self.core.log(Payload::Response {
-                        id: r.id.0,
-                        ts_exchange: r.ts_exchange,
-                        detail: format!("{:?}", r.kind),
-                    })?;
-                }
-                Popped::Scheduled(Scheduled::RiskReject { id, rule }) => {
-                    self.core.log(Payload::Risk { id: id.0, accepted: false, rule })?;
-                }
+                Popped::Scheduled(Scheduled::Response(r)) => self.response(&r, strategy)?,
+                Popped::Scheduled(Scheduled::RiskReject { id, rule }) => self.risk_reject(id, rule, strategy)?,
             }
         }
+        self.flush_risk_events(strategy);
+        if let Some(e) = self.core.error.take() {
+            return Err(e);
+        }
         self.n_events += 1;
+        self.kill_fired |= self.core.risk.kill.killed();
         self.reconcile(key.ts)?;
         Ok(StepStatus::Running)
+    }
+
+    fn flush_risk_events(&mut self, strategy: &mut dyn Strategy) {
+        if self.core.pending_risk_events.is_empty() {
+            return;
+        }
+        let events = std::mem::take(&mut self.core.pending_risk_events);
+        if self.started {
+            self.core.refresh_risk_state();
+            for e in &events {
+                let mut ctx = Ctx { books: &self.books, core: &mut self.core };
+                strategy.on_risk_event(&mut ctx, e);
+            }
+        }
+    }
+
+    fn response(&mut self, r: &ExchangeResponse, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        let seq = self.core.log(Payload::Response {
+            id: r.id.0,
+            ts_exchange: r.ts_exchange,
+            detail: format!("{:?}", r.kind),
+        })?;
+        let now = self.core.now;
+        let applied = match self.core.oms.on_response(r, now) {
+            Ok(a) => a,
+            Err(e) => {
+                self.core.log(Payload::Log { msg: e.to_string() })?;
+                return Ok(());
+            }
+        };
+        if applied.changed {
+            self.core.oms.row(seq, r.id);
+        }
+        if let Some(f) = &applied.fill {
+            let sym = f.symbol.0 as usize;
+            self.core.ledger.apply_fill(&LedgerFill {
+                symbol: sym,
+                side: f.side.sign(),
+                price: f.price,
+                qty: f.qty,
+                fee: f.fee,
+            })?;
+            let fseq = self.core.log(Payload::Fill {
+                id: f.client_order_id.0,
+                symbol: f.symbol.0,
+                side: f.side.sign(),
+                price: f.price,
+                qty: f.qty,
+                fee: f.fee,
+                liquidity: u8::from(f.liquidity == crate::order::Liquidity::Taker),
+            })?;
+            self.core.oms.fill_row(fseq, f);
+            if self.core.marks[sym].is_none() {
+                self.core.marks[sym] = Some(f.price);
+            }
+            self.core.track_equity();
+            self.core.ledger_row(sym)?;
+            self.core.after_pnl_change()?;
+        }
+        // A post-only order that would cross is an expected outcome of
+        // quoting (Binance reports it as EXPIRED), not an error burst.
+        let counts = applied.update.reason.as_deref() != Some(crate::gateway::reason::POST_ONLY_WOULD_CROSS);
+        if applied.rejected && counts {
+            if let Some(k) = self.core.risk.kill.on_reject(now) {
+                self.core.kill_actions(&k)?;
+            }
+        }
+        self.core.refresh_risk_state();
+        if self.started {
+            if let Some(f) = &applied.fill {
+                let mut ctx = Ctx { books: &self.books, core: &mut self.core };
+                strategy.on_fill(&mut ctx, f);
+            }
+            if applied.changed {
+                let mut ctx = Ctx { books: &self.books, core: &mut self.core };
+                strategy.on_order_update(&mut ctx, &applied.update);
+            }
+            self.last_event = LastEvent::Order;
+        }
+        Ok(())
+    }
+
+    fn risk_reject(&mut self, id: ClientOrderId, rule: String, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        self.core.log(Payload::Risk { id: id.0, accepted: false, rule: rule.clone() })?;
+        let Some(upd) = self.core.oms.order(id) else { return Ok(()) };
+        self.core.refresh_risk_state();
+        if self.started {
+            let ev = RiskEvent {
+                kind: RiskEventKind::Reject,
+                rule,
+                detail: upd.reason.clone().unwrap_or_default(),
+                client_order_id: Some(id),
+                ts_local: self.core.now,
+            };
+            let mut ctx = Ctx { books: &self.books, core: &mut self.core };
+            strategy.on_order_update(&mut ctx, &upd);
+            strategy.on_risk_event(&mut ctx, &ev);
+            self.last_event = LastEvent::Order;
+        }
+        Ok(())
+    }
+
+    /// Fire the kill switch from outside a callback (CLI, Python, signal).
+    ///
+    /// # Errors
+    /// Event-log errors.
+    pub fn kill_switch(&mut self, reason: &str, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        let r = KillReason::Manual(reason.to_owned());
+        if self.core.risk.trigger(r.clone()) {
+            self.core.kill_actions(&r)?;
+        }
+        self.flush_risk_events(strategy);
+        Ok(())
+    }
+
+    /// Reset the kill switch (the only way back, FR-15).
+    ///
+    /// # Errors
+    /// Event-log errors.
+    pub fn reset_kill_switch(&mut self, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        if !self.core.risk.kill.killed() {
+            return Ok(());
+        }
+        self.core.risk.kill.reset();
+        self.core.log(Payload::Kill { reason: "reset".to_owned() })?;
+        self.core.pending_risk_events.push(RiskEvent {
+            kind: RiskEventKind::KillReset,
+            rule: "manual".to_owned(),
+            detail: "reset".to_owned(),
+            client_order_id: None,
+            ts_local: self.core.now,
+        });
+        self.core.refresh_risk_state();
+        self.flush_risk_events(strategy);
+        Ok(())
     }
 
     fn reconcile(&mut self, ts: Nanos) -> Result<(), EngineError> {
@@ -693,6 +1090,7 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
     fn local_market(&mut self, ev: &MarketEvent, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
         let ts = self.core.now;
         self.core.log(Payload::LocalMarket(market_rec(ev)))?;
+        self.core.risk.kill.on_feed(ts);
         let sym = ev.symbol.0 as usize;
         if let MarketKind::Trade { side, price, qty, .. } = ev.kind {
             if self.params.mark_kind == MarkKind::LastTrade {
@@ -726,6 +1124,7 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
         };
         self.last_bbo[sym] = (valid, bid, ask);
         if deliver && self.started && self.subs.wants(ev.symbol) {
+            self.core.refresh_risk_state();
             let view = self.books.view(ev.symbol);
             let mut ctx = Ctx { books: &self.books, core: &mut self.core };
             strategy.on_book(&mut ctx, &view);
@@ -844,7 +1243,7 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             reconciliation_violations: self.violations,
             book_gaps: gaps,
             book_crossed: crossed,
-            kill_switch_triggered: self.core.risk_state.killed,
+            kill_switch_triggered: self.kill_fired,
             source: self.source.stats(),
         };
         Ok(RunOutput {
@@ -889,5 +1288,27 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
     #[must_use]
     pub fn ledger(&self) -> &Ledger {
         &self.core.ledger
+    }
+}
+
+/// Integer risk limits from `[risk]`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn risk_limits(r: &RiskCfg) -> RiskLimits {
+    let nq = edbt_ledger::fixed::nq_from_f64;
+    RiskLimits {
+        max_position_lots: r.max_position_lots,
+        max_open_orders: r.max_open_orders,
+        max_order_qty_lots: r.max_order_qty_lots,
+        max_order_notional_nq: nq(r.max_order_notional),
+        max_orders_per_sec: r.max_orders_per_sec,
+        max_cancels_per_sec: r.max_cancels_per_sec,
+        price_band_ubps: (r.price_band_bps * 1e6).round() as i64,
+        kill: KillConfig {
+            max_loss_nq: nq(r.kill_max_loss),
+            max_drawdown_nq: nq(r.kill_max_drawdown),
+            stale_feed_ns: r.kill_stale_feed_ms.saturating_mul(1_000_000),
+            reject_burst: r.kill_reject_burst,
+        },
     }
 }

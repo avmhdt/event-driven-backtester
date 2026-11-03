@@ -10,12 +10,15 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-ledger.workspace = true
+libm.workspace = true
 edbt-core.workspace = true
 edbt-book.workspace = true
 rand_chacha.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+toml.workspace = true
 proptest.workspace = true
 
 [lints]

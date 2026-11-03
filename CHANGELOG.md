@@ -6,6 +6,27 @@ against `edbt` (`docs/python_api.md`). `edbt.API_VERSION` follows semver
 
 ## Unreleased
 
+### M3: simulated exchange and risk
+
+- Order manager with the FR-07 state machine, cancel-replace and fills
+  applied to the ledger before `on_fill`.
+- Simulated exchange: aggressive matching with a consumed-liquidity shadow,
+  GTC/IOC/FOK/post-only and market orders, self-trade prevention, queue
+  models `none`, `risk_averse`, `prob_power`, `prob_log`, `l3_fifo`,
+  trade-through and book-cross fills, point-in-time fees and rebates.
+- Feed and order latency models (`recorded`, `constant`, `lognormal`,
+  `empirical`, `interpolated`).
+- `edbt-risk`: pre-trade checks, rate limits and the kill switch, run inside
+  order entry in every mode.
+- Rust `mm_simple` and `taker_imbalance`.
+- `edbt data bbo` derives canonical bbo and checks it against a source bbo.
+
+### M2: core engine, books, ledger, event log
+
+- Deterministic event loop, L2/L3 books, `ReplaySource`, fixed-point ledger
+  with per-event reconciliation, event log, run directory with run hash,
+  `edbt run`, `replay-check`, `log inspect|verify`.
+
 ### M1: scaffolding, CI and data-access smoke test
 
 - Cargo workspace with every crate of spec section 6; `edbt` CLI skeleton.

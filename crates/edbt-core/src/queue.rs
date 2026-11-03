@@ -123,7 +123,9 @@ impl Scheduler {
         self.now
     }
 
-    pub(crate) fn set_now(&mut self, ts: Nanos) {
+    /// Move the scheduler's clock to `ts` (the engine does this for every
+    /// event; test harnesses driving a gateway directly do it themselves).
+    pub fn set_now(&mut self, ts: Nanos) {
         self.now = ts;
     }
 

@@ -1,0 +1,28 @@
+# Hand-computed fill scenario (AC-W-03). Prices in ticks of 0.01, sizes in
+# lots of 1, so one lot at one tick is 0.01 quote = 10,000,000 nano-quote.
+# Fees: maker -0.5 bps -> -500 nq per tick-lot; taker 2 bps -> 2,000 nq per
+# tick-lot. Runner: crates/edbt-exchange/tests/scenarios.rs.
+
+name = "s03_ioc"
+rule = "ioc_remainder_cancelled"
+description = "IOC buy at 101 for 5: 2 fill, the rest expires."
+
+[setup]
+
+[[events]]
+t = 0
+kind = "snapshot"
+bids = [[100, 5], [99, 4]]
+asks = [[101, 2], [102, 3], [104, 5]]
+[[events]]
+t = 10
+kind = "order"
+ref = "A"
+side = "buy"
+type = "limit"
+tif = "ioc"
+qty = 5
+price = 101
+[[expected]]
+ref = "A"
+responses = ["accepted", "fill 101 2 taker 404000", "expired IOC_REMAINDER"]

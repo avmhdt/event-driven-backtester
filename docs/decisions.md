@@ -183,3 +183,63 @@ release of each crate that still builds on Rust 1.85.
   not reduce a level's total when an execution or cancel emptied an order,
   so its `book_l2` output overstated sizes. Fixed before any golden hash
   existed, and the committed fixtures were regenerated (`just fixtures`).
+- **2026-11-03 (M3) Order path ordering.** Requests reach the exchange in send
+  order (`max(previous arrival, ts_send + entry)`) and responses reach the
+  strategy in the order produced, as on one connection, so a cancel can never
+  overtake the order it cancels.
+- **2026-11-03 (M3) Queue position in micro-lots.** L2 queue models keep the
+  quantity ahead in micro-lots and apply the expected share of each cancel
+  (no random draw), so `prob_power` and `prob_log` are deterministic and the
+  `queue` RNG stream is reserved for future stochastic variants. Level
+  changes are applied once per L2 batch (also covering snapshots).
+- **2026-11-03 (M3) Trade-through and book-cross fills.** Both fill the whole
+  remainder at our price. A book cross counts our consumed-liquidity shadow,
+  so liquidity we already took cannot fill a resting remainder again.
+- **2026-11-03 (M3) Unknown-side trades.** A trade without a side is
+  classified against the exchange BBO before the trade (DQ-10); one that
+  stays unknown does not interact with our orders at all.
+- **2026-11-03 (M3) Several of our orders at one price.** Each keeps its own
+  queue estimate; a trade's quantity is shared out in arrival order so the
+  same printed quantity does not fill two of our orders.
+- **2026-11-03 (M3) Self-trade prevention.** Our orders are not in the
+  replayed book, so STP is checked against our own resting orders that the
+  incoming order would cross: `cancel_newest` expires the incoming order
+  (`STP`), `cancel_oldest` cancels the resting ones first.
+- **2026-11-03 (M3) Risk rejections arrive as callbacks.** A risk reject
+  marks the order `Rejected` (`RISK:<rule>`) at once and is delivered to the
+  strategy at the same local time, after the current callback, as an order
+  update and a risk event. Rejected orders do not use rate tokens. A cancel
+  over the cancel-rate limit is not sent and is reported as a risk warning;
+  kill-switch cancels bypass the limit.
+- **2026-11-03 (M3) Reject burst excludes post-only crosses.** The
+  reject-burst kill trigger counts risk rejects and venue rejects except
+  `POST_ONLY_WOULD_CROSS`, which Binance reports as an expired order and
+  which is the normal outcome of quoting at the touch with latency. Without
+  this, `mm_simple` was killed within seconds on synthetic data.
+- **2026-11-03 (M3) Stale-feed kill in backtests.** The trigger is generic
+  (`kill_stale_feed_ms`, no mode branch). Backtest configs on recorded data
+  set it to 0, because recording outages are data gaps that the book-validity
+  rule already handles; live configs keep the 2 s default.
+- **2026-11-03 (M3) Receive-clock regressions (DQ-03).** The shared crypto
+  capture has one row on 2026-11-02 (of 102M) whose `ts_recv` steps back
+  0.74 ms while its `batch_id` and the Binance `pu` chain continue: a host
+  clock step (see the WSL clock note in the shared notes). Sorting by
+  `ts_recv`, as `allow_reorder` would, would break the update chain and
+  invalidate the book until the next snapshot. So a step back of at most
+  1 s with an increasing producer key (`batch_id`, or `trade_id` for trades)
+  keeps file order and is counted as `clock_regressions` in `summary.json`
+  and `edbt data validate`; anything else is still a DQ-03 hard failure.
+- **2026-11-03 (M3) Reconstructed-BBO check (AC-W-09).** Binance's depth
+  stream is aggregated over 100 ms while `bookTicker` is per update, so their
+  timestamps never line up. The check compares the book after a depth batch
+  with every source `bbo` row whose update id equals the batch's final
+  update id (`seq`), where both describe the same venue state:
+  `edbt data bbo --compare`.
+- **2026-11-03 (M3) Binance instruments.** `configs/instruments.toml` copies
+  BTCUSDT, ETHUSDT and SOLUSDT from crypto-lob-alpha's
+  `config/instruments.yaml` (tick and lot from `fapi/v1/exchangeInfo`, fees
+  2.0/5.0 bps from Binance's USD-M fee page for Regular users, both read on
+  2026-11-01) with that source recorded per entry.
+- **2026-11-03 (M3) Golden snapshots.** `tests/golden/` holds `summary.json`
+  and the hashes of every run file except `config.resolved.toml` (which
+  contains temp paths) for three fixture scenarios.

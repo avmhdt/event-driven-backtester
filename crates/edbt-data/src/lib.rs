@@ -6,6 +6,7 @@
 //! validate their schema (DQ-01) and convert prices and quantities to integer
 //! ticks and lots (DQ-05). The synthetic generator writes the same layout.
 
+pub mod bbo;
 pub mod book_l2;
 pub mod book_l3;
 pub mod instruments;
