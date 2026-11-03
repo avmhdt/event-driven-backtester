@@ -119,10 +119,46 @@ jobs:
           uv sync --python 3.12 --locked
           uv run --frozen pytest -m "not data and not testnet" --cov=edbt --cov-report=term-missing --cov-fail-under=0
 
+  determinism:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build edbt (release)
+        run: cargo build --release --locked -p edbt-cli
+      - name: Same seed twice, then another seed (AC-W-01)
+        shell: bash
+        run: EDBT=target/release/edbt bash scripts/determinism.sh _determinism
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.os }}
+          path: _determinism/a/hashes.json
+
+  # Linux vs Windows hashes: reported, not gating (NFR-04 "Should").
+  determinism-cross-os:
+    needs: determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Compare run hashes across operating systems
+        run: |
+          for f in determinism-*/hashes.json; do echo "$f $(jq -r .run_hash "$f")"; done
+          if [ "$(jq -r .run_hash determinism-ubuntu-latest/hashes.json)" = "$(jq -r .run_hash determinism-windows-latest/hashes.json)" ]; then
+            echo "Linux and Windows run hashes are equal"
+          else
+            echo "Linux and Windows run hashes differ (reported, not gating)"
+            jq -n --slurpfile l determinism-ubuntu-latest/hashes.json --slurpfile w determinism-windows-latest/hashes.json               '$l[0].files | to_entries | map(select(.value != $w[0].files[.key]) | .key)'
+          fi
+
   # The single required status check for branch protection.
   ci:
     if: always()
-    needs: [lint, test, python, coverage]
+    needs: [lint, test, python, coverage, determinism]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

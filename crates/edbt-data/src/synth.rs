@@ -244,12 +244,13 @@ impl Market {
         let Some(o) = self.orders.get_mut(&id) else { return };
         o.qty -= by;
         let (side, price, left) = (o.side, o.price, o.qty);
-        if left <= 0 {
-            self.unlink(id);
-            return;
-        }
         if let Some(lvl) = self.book(side).get_mut(&price) {
             lvl.total -= by;
+        }
+        if left <= 0 {
+            // The order is gone; `unlink` subtracts its (now zero) size.
+            self.unlink(id);
+            return;
         }
         self.touched.push((side, price));
     }

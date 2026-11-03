@@ -10,6 +10,9 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-core.workspace = true
+thiserror.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 

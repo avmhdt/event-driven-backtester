@@ -59,18 +59,46 @@ impl FileReport {
     }
 }
 
+/// Book-level findings for one symbol (DQ-04, DQ-06, DQ-09), from replaying
+/// its files through a book.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BookReport {
+    /// Venue.
+    pub venue: String,
+    /// Symbol.
+    pub symbol: String,
+    /// Atomic updates applied (L2 batches or L3 events).
+    pub updates: u64,
+    /// Snapshot batches (L2).
+    pub snapshots: u64,
+    /// Sequence gaps (DQ-04).
+    pub gaps: u64,
+    /// Batches that left the book crossed (DQ-06).
+    pub crossed: u64,
+    /// L3 events on unknown order ids (DQ-09).
+    pub l3_unknown: u64,
+    /// Updates applied while the book was invalid (before the first
+    /// snapshot or after a gap or cross).
+    pub invalid_updates: u64,
+    /// Replay error, if the book could not be replayed.
+    pub error: Option<String>,
+}
+
 /// Findings for a dataset.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     /// Per-file findings.
     pub files: Vec<FileReport>,
+    /// Per-symbol book replays (`book_l2`, `book_l3`).
+    pub books: Vec<BookReport>,
 }
 
 impl Report {
     /// Total hard failures.
     #[must_use]
     pub fn hard_failures(&self) -> u64 {
-        self.files.iter().map(FileReport::hard_failures).sum()
+        self.files.iter().map(FileReport::hard_failures).sum::<u64>()
+            + self.books.iter().filter(|b| b.error.is_some()).count() as u64
     }
 
     /// Total rows read.
@@ -238,9 +266,82 @@ pub fn validate_dataset(root: &Path, dataset: &str, filter: &Filter, instruments
                 };
                 report.files.push(rep);
             }
+            if matches!(dataset, "book_l2" | "book_l3") {
+                if let Some(b) = replay_book(root, dataset, &venue, &symbol, filter, instruments) {
+                    report.books.push(b);
+                }
+            }
         }
     }
     Ok(report)
+}
+
+/// Replay one symbol's book through `edbt-book` and count gaps, crossed
+/// batches and unknown L3 ids. `None` without instrument metadata.
+fn replay_book(
+    root: &Path,
+    dataset: &str,
+    venue: &str,
+    symbol: &str,
+    filter: &Filter,
+    instruments: &InstrumentTable,
+) -> Option<BookReport> {
+    use edbt_book::l2::{BatchEnd, L2Book};
+    use edbt_book::l3::L3Book;
+    use edbt_core::event::{EventSource, MarketKind};
+
+    let day = filter.date.as_deref().and_then(|d| edbt_core::time::parse_rfc3339(d).ok());
+    let inst = instruments.versions(venue, symbol).last()?.clone();
+    let spec = crate::merge::ReplaySpec {
+        roots: vec![root.to_owned()],
+        venue: venue.to_owned(),
+        symbols: vec![(symbol.to_owned(), inst)],
+        book: if dataset == "book_l3" { crate::merge::BookData::L3 } else { crate::merge::BookData::L2 },
+        trades: false,
+        allow_reorder: false,
+        from: day,
+        to: day.map(|d| d + edbt_core::time::NANOS_PER_DAY),
+    };
+    let mut rep = BookReport { venue: venue.to_owned(), symbol: symbol.to_owned(), ..BookReport::default() };
+    let mut src = match crate::merge::ReplaySource::open(&spec) {
+        Ok(s) => s,
+        Err(e) => {
+            rep.error = Some(e.to_string());
+            return Some(rep);
+        }
+    };
+    let mut l2 = L2Book::new();
+    let mut l3 = L3Book::new();
+    while let Some(ev) = src.next_event() {
+        let ev = match ev {
+            Ok(ev) => ev,
+            Err(e) => {
+                rep.error = Some(e.to_string());
+                break;
+            }
+        };
+        match ev.kind {
+            MarketKind::L2 { side, price, qty, flags, .. } => {
+                if let Some(end) = l2.apply_row(side.book_side(), price, qty, flags, ev.ts_exchange) {
+                    rep.updates += 1;
+                    if end != BatchEnd::Ok {
+                        rep.invalid_updates += 1;
+                    }
+                }
+            }
+            MarketKind::L3 { op, order_id, side, price, qty, new_order_id } => {
+                l3.apply(op, order_id, side.book_side(), price, qty, new_order_id);
+                rep.updates += 1;
+            }
+            MarketKind::Trade { .. } => {}
+        }
+    }
+    let s2 = l2.stats();
+    rep.snapshots = s2.snapshots;
+    rep.gaps = s2.gaps;
+    rep.crossed = s2.crossed;
+    rep.l3_unknown = l3.stats().unknown_order;
+    Some(rep)
 }
 
 #[cfg(test)]
@@ -277,6 +378,9 @@ effective_from = "2020-01-01"
         assert_eq!(rep.rows(), sink.l2.len() as u64);
         assert_eq!(rep.files[0].off_grid_price, 0);
         assert!(!rep.files[0].no_instrument);
+        let b = &rep.books[0];
+        assert_eq!((b.gaps, b.crossed, b.invalid_updates, b.error.as_deref()), (0, 0, 0, None));
+        assert!(b.updates > 100 && b.snapshots >= 1);
     }
 
     #[test]

@@ -10,9 +10,24 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-book.workspace = true
+edbt-ledger.workspace = true
+serde.workspace = true
+toml.workspace = true
+blake3.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+libm.workspace = true
+postcard.workspace = true
+zstd.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+edbt-cli.workspace = true
+edbt-data.workspace = true
+edbt-exchange.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

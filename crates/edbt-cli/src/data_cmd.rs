@@ -81,6 +81,20 @@ pub fn run(cmd: DataCmd) -> anyhow::Result<i32> {
                     f.error.as_ref().map(|e| format!(" ERROR {e}")).unwrap_or_default()
                 );
             }
+            for b in &report.books {
+                println!(
+                    "book {}/{} updates={} snapshots={} gaps={} crossed={} invalid_updates={} l3_unknown={}{}",
+                    b.venue,
+                    b.symbol,
+                    b.updates,
+                    b.snapshots,
+                    b.gaps,
+                    b.crossed,
+                    b.invalid_updates,
+                    b.l3_unknown,
+                    b.error.as_ref().map(|e| format!(" ERROR {e}")).unwrap_or_default()
+                );
+            }
             let hard = report.hard_failures();
             println!("files={} rows={} hard_failures={hard}", report.files.len(), report.rows());
             if report.files.is_empty() {

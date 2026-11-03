@@ -99,6 +99,45 @@ smoke:
     fi
     echo "smoke: PASS"
 
+# AC-W-01: same seed twice -> identical run hash; another seed -> different.
+verify-ac-w-01:
+    cargo build -q --release -p edbt-cli
+    EDBT="$CARGO_TARGET_DIR/release/edbt" bash scripts/determinism.sh _determinism
+    cargo nextest run -p edbt-core --test determinism
+
+# AC-W-02: reconciliation proptest (10,000 cases) and 0 violations on synthetic runs.
+verify-ac-w-02:
+    cargo nextest run -p edbt-ledger --test recon_prop
+    cargo nextest run -p edbt-core --test determinism same_seed_identical_hash
+    @echo "AC-W-02: PASS (engine aborts on any violation; see summary.json reconciliation_violations)"
+
+# AC-W-04: ordering proptests (10,000 cases each).
+verify-ac-w-04:
+    cargo nextest run -p edbt-core --test ordering
+
+# AC-W-08: event log rebuilds the ledger; replay-check reproduces the run hash.
+verify-ac-w-08:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --release -p edbt-cli
+    e="$CARGO_TARGET_DIR/release/edbt"
+    rm -rf _ac_w_08 && "$e" data synth --kind l2 --events 300000 --seed 7 --out _ac_w_08/data >/dev/null
+    "$e" run --config configs/backtest_synthetic.toml --set 'data.roots=["_ac_w_08/data"]' --out _ac_w_08/run --no-log-experiment | tail -1
+    "$e" log verify --run _ac_w_08/run
+    "$e" replay-check --run _ac_w_08/run
+
+# AC-W-09: fixtures validate with 0 hard failures; L3 aggregation equals the L2 book.
+verify-ac-w-09:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    for f in tests/fixtures/*_small.csv; do cargo run -q -p edbt-cli --bin edbt -- data synth --fixture "$f" --out "$tmp" >/dev/null; done
+    for ds in book_l2 trades book_l3; do
+      cargo run -q -p edbt-cli --bin edbt -- data validate --dataset "$ds" --root "$tmp" --instruments tests/fixtures/instruments.toml | tail -2
+    done
+    cargo nextest run -p edbt-data --test fixtures_l3_l2
+    cargo nextest run -p edbt-book --test l3_l2_prop
+
 # Unsigned GET /fapi/v1/time against the configured testnet REST hosts (no keys).
 testnet-ping:
     {{py}} python scripts/testnet_ping.py configs/live_testnet.toml results/testnet_ping.csv

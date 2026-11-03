@@ -10,6 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+edbt-book.workspace = true
 edbt-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

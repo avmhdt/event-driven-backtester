@@ -62,7 +62,9 @@ def test_cli_synth_and_validate(tmp_path: Path) -> None:
     )
     assert cli_main(["edbt", "data", "validate", "--dataset", "book_l2", "--root", str(out)]) == 0
     assert cli_main(["edbt", "data", "validate", "--dataset", "book_l3", "--root", str(out)]) == 1
-    assert cli_main(["edbt", "run", "--config", "x.toml"]) == 2
+    assert cli_main(["edbt", "bench", "--mode", "engine"]) == 2
+    with pytest.raises(RuntimeError, match=r"x\.toml"):
+        cli_main(["edbt", "run", "--config", "x.toml"])
     assert cli_main(["edbt", "--version"]) == 0
     assert cli_main(["edbt", "no-such-command"]) == 2
 

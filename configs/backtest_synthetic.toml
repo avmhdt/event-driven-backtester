@@ -1,0 +1,44 @@
+# Synthetic L2 backtest: the determinism reference (AC-W-01, CI job
+# `determinism`). Generate the data first:
+#   edbt data synth --kind l2 --events 1000000 --seed 7 --out data/synthetic
+[run]
+name = "synthetic_l2"
+mode = "backtest"
+seed = 20261030
+start = "2026-01-01T00:00:00Z"
+end = "2026-01-02T00:00:00Z"
+out_dir = "results/runs"
+event_log = "full"
+
+[data]
+roots = ["data/synthetic"]
+venue = "synthetic"
+symbols = ["SYN"]
+book = "book_l2"
+trades = true
+instruments = "configs/instruments.toml"
+
+# Stochastic feed latency so that determinism covers the RNG streams.
+[latency.feed]
+model = "lognormal"
+mu = 13.8          # ~1 ms median
+sigma = 0.5
+
+[latency.order]
+model = "lognormal"
+entry_mu = 14.5    # ~2 ms median
+entry_sigma = 0.35
+response_mu = 14.5
+response_sigma = 0.35
+
+[queue]
+model = "prob_power"
+power = 2.0
+
+[ledger]
+initial_cash = 100000.0
+quote_currency = "USDT"
+
+[strategy]
+kind = "rust"
+path = "noop"
