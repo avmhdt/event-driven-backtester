@@ -80,6 +80,9 @@ pub struct SessionOptions {
     pub creds: Option<Credentials>,
     /// Set by a signal handler to end the session cleanly.
     pub stop: Arc<AtomicBool>,
+    /// Close any position the venue still reports after the session stops
+    /// (testnet, from `risk.flatten_on_kill`).
+    pub flatten_at_end: bool,
 }
 
 /// Counters of a session.
@@ -120,6 +123,9 @@ pub struct LiveStats {
     /// Open orders the venue still listed at the end (cancelled by the
     /// shutdown sweep).
     pub leftover_orders: u64,
+    /// Positions the shutdown sweep closed at the venue (fills that arrived
+    /// after the session's own flatten).
+    pub swept_positions: u64,
     /// Live-path latency inside the engine (NFR-03), ns.
     pub internal_latency: Vec<i64>,
     /// Order latency rows of this session.
@@ -975,11 +981,23 @@ pub fn run<G: Gateway>(
         let wind = (|| -> Result<(), LiveError> {
             d.step_due(now)?;
             d.engine.control("session_end", now, d.strategy)?;
+            // Wait (at most 5 s) for the venue to confirm the cancels, then
+            // for 500 ms without order messages so fills in flight land.
             let until = now + 5 * NS_PER_S;
-            while wall_ns() < until && (d.engine.open_order_count() > 0 || d.translator.working() > 0) {
+            let mut quiet_since = wall_ns();
+            while wall_ns() < until {
+                let busy = d.engine.open_order_count() > 0 || d.translator.working() > 0;
+                if !busy && wall_ns() - quiet_since >= 500_000_000 {
+                    break;
+                }
                 match d.io.rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(Inbound::Market { .. }) | Err(_) => {}
-                    Ok(msg) => d.handle(msg)?,
+                    Ok(msg) => {
+                        if matches!(msg, Inbound::Order(_) | Inbound::User { .. }) {
+                            quiet_since = wall_ns();
+                        }
+                        d.handle(msg)?;
+                    }
                 }
                 d.step_due(wall_ns())?;
             }
@@ -998,8 +1016,11 @@ pub fn run<G: Gateway>(
     }
     d.stats.ended = ended;
     if o.mode == Mode::Testnet {
-        match venue_sweep(&d.io.rest, &o.symbols, false) {
-            Ok((n, _)) => d.stats.leftover_orders = n,
+        match venue_sweep(&d.io.rest, &o.symbols, o.flatten_at_end) {
+            Ok((n, p)) => {
+                d.stats.leftover_orders = n;
+                d.stats.swept_positions = p;
+            }
             Err(e) => tracing::error!(error = %e, "shutdown sweep failed"),
         }
     }

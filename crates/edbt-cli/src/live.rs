@@ -158,6 +158,7 @@ pub fn plan(cfg: &Config, o: &LiveRunOpts) -> anyhow::Result<LivePlan> {
         tag,
         creds,
         stop: o.stop.clone(),
+        flatten_at_end: cfg.risk.flatten_on_kill,
     };
     Ok(LivePlan { cfg, specs, opts, session_id, table })
 }
@@ -226,6 +227,7 @@ pub fn stats_json(s: &LiveStats, mode: Mode) -> serde_json::Value {
         "venue_recon_violations": s.venue_recon_violations,
         "kill_confirm_ms": s.kill_confirm_ms,
         "leftover_orders": s.leftover_orders,
+        "swept_positions": s.swept_positions,
         "ended_by_kill": s.ended_by_kill,
         "internal_latency_ns": { "n": q.n, "p50": q.p50, "p99": q.p99 },
         "clock_offset_ns": s.offset.offset_ns,
