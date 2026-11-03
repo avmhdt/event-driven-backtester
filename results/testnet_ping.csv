@@ -1,0 +1,3 @@
+utc,url,http_status,server_time_ms,rtt_ms,note
+2026-11-03T17:56:32+00:00,https://testnet.binancefuture.com/fapi/v1/time,200,1793728592238,809.0,
+2026-11-03T17:56:33+00:00,https://demo-fapi.binance.com/fapi/v1/time,200,1793728593227,994.6,

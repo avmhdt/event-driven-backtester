@@ -1,0 +1,1 @@
+run_id,utc,git_sha,git_dirty,config_hash,seed,mode,strategy,dataset,symbols,date_range,queue_model,feed_latency,order_latency,params_json,n_events,n_orders,n_fills,pnl,fees,run_hash,events_per_s

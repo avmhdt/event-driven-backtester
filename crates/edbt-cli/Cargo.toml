@@ -1,0 +1,34 @@
+[package]
+name = "edbt-cli"
+description = "The edbt command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "edbt"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+edbt-core.workspace = true
+edbt-data.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+float_cmp = "deny"

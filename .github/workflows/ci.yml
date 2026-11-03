@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Debug-profile extension builds keep the Python jobs fast; benchmarks never run in CI.
+  MATURIN_PEP517_ARGS: "--profile dev"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Data-file guard (NFR-09)
+        run: bash scripts/check_data_files.sh
+      - name: gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz gitleaks
+          ./gitleaks git --redact --verbose .
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: Python env (builds the extension)
+        run: uv sync --python 3.12 --locked
+      - name: clippy
+        run: PYO3_PYTHON="$(uv python find 3.12)" cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: ruff
+        run: |
+          uv run --frozen ruff check python tests/python scripts strategies
+          uv run --frozen ruff format --check python tests/python scripts strategies
+      - name: mypy --strict
+        run: uv run --frozen mypy
+      - name: stubtest
+        run: uv run --frozen python -m mypy.stubtest edbt._edbt
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        rust: [stable, "1.85"]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cargo nextest
+        run: cargo nextest run --workspace --exclude edbt-py --locked
+
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: uv sync (builds the extension)
+        run: uv sync --python ${{ matrix.python }} --locked
+      - name: pytest
+        run: uv run --frozen pytest -m "not data and not testnet"
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # Thresholds start at 0 and are raised to the NFR-06 targets in M3.
+      - name: Rust line coverage
+        run: cargo llvm-cov nextest --workspace --exclude edbt-py --locked --ignore-filename-regex "edbt-cli/src/main.rs" --fail-under-lines 0
+      - name: Python line coverage
+        run: |
+          uv sync --python 3.12 --locked
+          uv run --frozen pytest -m "not data and not testnet" --cov=edbt --cov-report=term-missing --cov-fail-under=0
+
+  # The single required status check for branch protection.
+  ci:
+    if: always()
+    needs: [lint, test, python, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = "success" ] || exit 1
+          done

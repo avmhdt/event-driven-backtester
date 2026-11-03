@@ -1,0 +1,17 @@
+[package]
+name = "edbt-book"
+description = "L2 price-level and L3 order-level order books with BBO and depth views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

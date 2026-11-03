@@ -1,0 +1,95 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "edbt-sim"
+description = "Event-driven backtester with realistic execution: latency, queue position, partial fills"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "avmhdt" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dynamic = ["version"]
+dependencies = [
+  "numpy>=2.0",
+  "polars>=1.20",
+  "pyarrow>=17",
+  "pydantic-settings>=2.4",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+study = ["duckdb>=1.1", "scipy>=1.13", "matplotlib>=3.9"]
+
+[project.scripts]
+edbt = "edbt._cli:main"
+edbt-ingest = "edbt.ingest.cli:app"
+edbt-study = "edbt.studies.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=5",
+  "hypothesis>=6.100",
+  "mypy>=1.11",
+  "ruff>=0.6",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "edbt._edbt"
+manifest-path = "crates/edbt-py/Cargo.toml"
+features = ["pyo3/extension-module"]
+include = [{ path = "LICENSE-MIT", format = "sdist" }, { path = "LICENSE-APACHE", format = "sdist" }]
+
+[tool.uv]
+# Rebuild the extension whenever Rust sources change.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "Cargo.lock" },
+  { file = "crates/**/*.rs" },
+  { file = "crates/**/Cargo.toml" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra --strict-markers"
+markers = [
+  "data: needs real data under data/ or EDBT_EXTERNAL_DATA_ROOTS (local only)",
+  "testnet: needs testnet keys and network (local only)",
+]
+
+[tool.coverage.run]
+source = ["edbt"]
+omit = ["*/edbt/studies/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["python", "tests/python", "strategies"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "D", "N", "PT", "ANN"]
+ignore = ["D203", "D213", "D105", "D107", "ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ANN"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["python/edbt"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true

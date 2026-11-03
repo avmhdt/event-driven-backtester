@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/avmhdt/event-driven-backtester"
+authors = ["avmhdt"]
+
+[workspace.dependencies]
+edbt-core = { path = "crates/edbt-core" }
+edbt-data = { path = "crates/edbt-data" }
+edbt-book = { path = "crates/edbt-book" }
+edbt-exchange = { path = "crates/edbt-exchange" }
+edbt-risk = { path = "crates/edbt-risk" }
+edbt-ledger = { path = "crates/edbt-ledger" }
+edbt-live = { path = "crates/edbt-live" }
+edbt-strategies = { path = "crates/edbt-strategies" }
+edbt-cli = { path = "crates/edbt-cli" }
+
+# Version ranges let the MSRV-aware resolver (resolver 3) pick the newest
+# release that still builds on rust-version 1.85; Cargo.lock pins the result.
+arrow-array = { version = ">=56, <61", default-features = false }
+arrow-schema = { version = ">=56, <61", default-features = false }
+parquet = { version = ">=56, <61", default-features = false, features = ["arrow", "zstd"] }
+rand_core = "0.9"
+rand_chacha = "0.9"
+libm = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = ">=0.8, <2"
+postcard = { version = "1", features = ["use-std"] }
+zstd = ">=0.13, <0.15"
+blake3 = "1.5"
+clap = { version = "4.5", features = ["derive"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+anyhow = "1"
+url = "2"
+pyo3 = { version = ">=0.26, <0.31", features = ["abi3-py312"] }
+numpy = ">=0.26, <0.31"
+proptest = "1"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+float_cmp = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"

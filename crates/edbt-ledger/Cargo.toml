@@ -1,0 +1,17 @@
+[package]
+name = "edbt-ledger"
+description = "Fixed-point portfolio ledger with per-event reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

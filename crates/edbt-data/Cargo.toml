@@ -1,0 +1,29 @@
+[package]
+name = "edbt-data"
+description = "Canonical Parquet readers, k-way merge, instruments, validation and synthetic data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+edbt-core.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+parquet.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+libm.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
