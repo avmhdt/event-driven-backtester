@@ -96,3 +96,13 @@ fn credentials_only_from_testnet_variables() {
     let none = Credentials::from_lookup(|_| None);
     assert!(none.is_none());
 }
+
+#[test]
+fn plain_schemes_only_for_an_allowlisted_loopback_mock() {
+    let guard = HostGuard::new(&["127.0.0.1", "demo-fapi.binance.com"]).unwrap();
+    assert!(guard.check_url("http://127.0.0.1:8080/fapi/v1/time").is_ok());
+    assert!(guard.check_url("ws://127.0.0.1:9000/public/stream").is_ok());
+    assert!(matches!(guard.check_url("http://demo-fapi.binance.com/"), Err(LiveGuardError::BadScheme(_))));
+    assert!(matches!(guard.check_url("http://localhost:8080/"), Err(LiveGuardError::NotAllowed(_))));
+    assert!(matches!(guard.check_url("ws://fstream.binance.com/ws"), Err(LiveGuardError::Mainnet(_))));
+}

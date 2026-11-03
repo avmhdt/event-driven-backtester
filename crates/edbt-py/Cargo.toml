@@ -17,6 +17,7 @@ crate-type = ["cdylib", "rlib"]
 edbt-cli.workspace = true
 edbt-core.workspace = true
 edbt-data.workspace = true
+edbt-live.workspace = true
 edbt-ledger.workspace = true
 pyo3.workspace = true
 numpy.workspace = true

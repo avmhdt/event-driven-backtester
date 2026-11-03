@@ -1,0 +1,27 @@
+# Instruments of the local mock venue (`edbt mock-venue`, edbt_live::mock).
+# These are the mock's own made-up values, not Binance facts: tick and lot
+# match the mock's synthetic market, and the fees match its commission
+# rates (maker 0.0002, taker 0.0005).
+[[instrument]]
+venue = "mock"
+symbol = "BTCUSDT"
+tick_size = 0.1
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = 2.0
+taker_bps = 5.0
+effective_from = "2020-01-01"
+min_notional = 5.0
+source = "edbt_live::mock (synthetic)"
+
+[[instrument]]
+venue = "mock"
+symbol = "ETHUSDT"
+tick_size = 0.01
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = 2.0
+taker_bps = 5.0
+effective_from = "2020-01-01"
+min_notional = 5.0
+source = "edbt_live::mock (synthetic)"

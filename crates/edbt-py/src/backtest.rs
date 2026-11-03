@@ -62,7 +62,7 @@ impl Strat {
 }
 
 /// Result dictionary returned to Python after a run.
-fn result_dict(py: Python<'_>, r: &runner::RunResult) -> PyResult<Py<PyAny>> {
+pub(crate) fn result_dict(py: Python<'_>, r: &runner::RunResult) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     d.set_item("run_id", &r.run_id)?;
     d.set_item("out_dir", r.out_dir.to_string_lossy().into_owned())?;

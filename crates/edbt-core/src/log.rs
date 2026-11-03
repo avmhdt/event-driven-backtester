@@ -150,6 +150,44 @@ pub enum Payload {
     },
     /// Run end (strategy `on_stop`).
     Stop,
+    /// Live: a venue response handed to the engine (testnet mode), logged
+    /// when it is scheduled so a session can be replayed (FR-33).
+    Inject(ResponseRec),
+    /// Live: the wall clock advanced the engine without an event (stale-feed
+    /// check, periodic rows).
+    Tick,
+    /// Live: an operator command (`kill`, `reset`, `session_end`).
+    Control {
+        /// Command.
+        cmd: String,
+    },
+}
+
+/// A venue response in log form (live sessions).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseRec {
+    /// Client order id.
+    pub id: u64,
+    /// Exchange time.
+    pub ts_exchange: i64,
+    /// 0 accepted, 1 rejected, 2 fill, 3 canceled, 4 cancel rejected, 5 expired.
+    pub kind: u8,
+    /// Venue order id (accepted).
+    pub venue_order_id: Option<String>,
+    /// Reason code (rejects and expiries).
+    pub reason: String,
+    /// Fill price, ticks.
+    pub price: i64,
+    /// Fill quantity, lots.
+    pub qty: i64,
+    /// 0 maker, 1 taker.
+    pub liquidity: u8,
+    /// Fee, nano-quote.
+    pub fee: i128,
+    /// Leaves after the fill, lots.
+    pub leaves: i64,
+    /// Queue ahead at entry, lots.
+    pub queue_ahead: Option<i64>,
 }
 
 impl Payload {
@@ -171,6 +209,9 @@ impl Payload {
             Self::Kill { .. } => 11,
             Self::Log { .. } => 12,
             Self::Stop => 13,
+            Self::Inject(_) => 14,
+            Self::Tick => 15,
+            Self::Control { .. } => 16,
         }
     }
 
@@ -188,7 +229,7 @@ impl Payload {
 }
 
 /// Names of record kinds, indexed by [`Payload::kind`].
-pub const KIND_NAMES: [&str; 14] = [
+pub const KIND_NAMES: [&str; 17] = [
     "start",
     "market",
     "local_market",
@@ -203,6 +244,9 @@ pub const KIND_NAMES: [&str; 14] = [
     "kill",
     "log",
     "stop",
+    "inject",
+    "tick",
+    "control",
 ];
 
 /// One log record.

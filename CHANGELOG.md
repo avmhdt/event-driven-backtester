@@ -6,6 +6,24 @@ against `edbt` (`docs/python_api.md`). `edbt.API_VERSION` follows semver
 
 ## Unreleased
 
+### M5: live adapter, paper mode, latency measurement
+
+- `edbt live` (paper and testnet), `edbt kill`, `edbt latency measure | fit`
+  and `edbt log replay-strategy`. In Python, `edbt.run_live` now runs
+  sessions; its signature is unchanged and the API stays 1.0.0. The same
+  strategy runs in backtest, paper and testnet mode.
+- Binance USD-M futures testnet gateway: signed REST, user stream with
+  listenKey keepalive, depth sync with snapshots, reconnects with backoff,
+  rate-limit handling, venue position reconciliation, start and shutdown
+  sweeps, and kill confirmation at the venue.
+- Recorder: canonical `book_l2`, `trades` and `bbo` partitions, plus gaps,
+  clock offsets and latency rows; per-session status, drops and live
+  counters.
+- A local mock venue (`edbt mock-venue`) for CI and demos.
+- `edbt-ingest instruments` pulls testnet tick, lot, minimum notional and
+  commission rates.
+- Gap-study configs, supervisor and runbook (`docs/live_runbook.md`).
+
 ### M4: Python API 1.0.0 and throughput
 
 - **[API] 1.0.0 for `market-making-sim`.** The full section 10 surface:

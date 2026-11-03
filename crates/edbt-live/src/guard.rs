@@ -68,6 +68,12 @@ pub fn is_mainnet_host(host: &str) -> bool {
     }
 }
 
+/// Loopback host names (the local mock venue).
+#[must_use]
+pub fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
+}
+
 /// The allowlist of testnet hosts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostGuard {
@@ -102,12 +108,15 @@ impl HostGuard {
     /// Any [`LiveGuardError`] variant except `BadEntry`.
     pub fn check_url(&self, url: &str) -> Result<Url, LiveGuardError> {
         let parsed = Url::parse(url).map_err(|_| LiveGuardError::BadUrl(url.to_owned()))?;
-        if !matches!(parsed.scheme(), "https" | "wss") {
-            return Err(LiveGuardError::BadScheme(parsed.scheme().to_owned()));
-        }
         let host = parsed.host_str().ok_or_else(|| LiveGuardError::BadUrl(url.to_owned()))?.to_ascii_lowercase();
         if is_mainnet_host(&host) {
             return Err(LiveGuardError::Mainnet(host));
+        }
+        // Plain http/ws only for an allowlisted loopback address: the local
+        // mock venue used by tests and `just demo-modes`.
+        let plain_ok = matches!(parsed.scheme(), "http" | "ws") && is_loopback(&host);
+        if !matches!(parsed.scheme(), "https" | "wss") && !plain_ok {
+            return Err(LiveGuardError::BadScheme(parsed.scheme().to_owned()));
         }
         if !self.allowed.contains(&host) {
             return Err(LiveGuardError::NotAllowed(host));

@@ -486,6 +486,31 @@ pub struct LiveCfg {
     pub recv_window_ms: u64,
     /// Clock-offset measurement interval, s.
     pub clock_sync_interval_s: u64,
+    /// WebSocket path of public streams (depth, bookTicker).
+    pub ws_public_path: String,
+    /// WebSocket path of market streams (aggTrade).
+    pub ws_market_path: String,
+    /// WebSocket path of the user stream; `{listen_key}` is replaced.
+    pub ws_private_path: String,
+    /// Parent directory of session directories.
+    pub session_dir: String,
+    /// Status file and heartbeat interval, s.
+    pub status_interval_s: u64,
+    /// Venue position check interval, s (testnet).
+    pub reconcile_interval_s: u64,
+    /// Engine tick interval without events, ms (stale-feed check).
+    pub tick_interval_ms: u64,
+    /// Stop the session and kill below this much free disk, GB.
+    pub min_free_gb: f64,
+    /// Warn when the data disk is fuller than this, percent.
+    pub disk_warn_pct: f64,
+    /// Proactive reconnect age of a WebSocket, hours (venue limit 24 h).
+    pub max_conn_age_h: f64,
+    /// Reconnect a market stream silent for this long, s.
+    pub stale_after_s: u64,
+    /// End the session once the kill switch fires and the venue confirms no
+    /// open orders (unattended runs restart into a fresh session).
+    pub end_on_kill: bool,
 }
 
 impl Default for LiveCfg {
@@ -503,6 +528,18 @@ impl Default for LiveCfg {
             record_dir: "data".to_owned(),
             recv_window_ms: 5_000,
             clock_sync_interval_s: 60,
+            ws_public_path: "/public/stream".to_owned(),
+            ws_market_path: "/market/stream".to_owned(),
+            ws_private_path: "/private/ws/{listen_key}".to_owned(),
+            session_dir: "results/live".to_owned(),
+            status_interval_s: 10,
+            reconcile_interval_s: 60,
+            tick_interval_ms: 1_000,
+            min_free_gb: 5.0,
+            disk_warn_pct: 80.0,
+            max_conn_age_h: 23.0,
+            stale_after_s: 30,
+            end_on_kill: false,
         }
     }
 }

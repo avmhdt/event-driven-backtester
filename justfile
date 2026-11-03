@@ -68,7 +68,7 @@ test-data:
     cargo nextest run --workspace --exclude edbt-py --run-ignored only -E 'test(/data/)'
     {{py}} pytest -m data
 
-# Tests that need testnet keys and network (local only, from M5).
+# Tests that need testnet keys and network (local only).
 test-testnet:
     {{py}} pytest -m testnet
 
@@ -118,10 +118,70 @@ verify-ac-w-03:
     python3 scripts/check_fill_rule_coverage.py
     cargo nextest run -p edbt-exchange
 
-# AC-W-06 (simulation side): every risk rule accepts and rejects; kill switch.
+# AC-W-06: every risk rule accepts and rejects; kill switch; the same risk
+# path through the simulated exchange and the venue gateway (mock); the kill
+# switch clears the venue's open orders within 2 s.
 verify-ac-w-06:
     cargo nextest run -p edbt-risk
     cargo nextest run -p edbt-core --test oms_state_machine
+    cargo nextest run -p edbt-cli --test live_mock -E 'test(shared_risk_path) | test(kill_switch)'
+
+# AC-W-05: latency models (KS tests) and the measured report. `measure` needs
+# testnet keys; it writes rows under $DATA_ROOT/processed/latency and the report.
+verify-ac-w-05 n="500":
+    cargo nextest run -p edbt-exchange --test latency_models
+    cargo run -q --release -p edbt-cli --bin edbt -- latency measure --config configs/live_testnet.toml --n {{n}} --report reports/latency.md
+
+# AC-W-07 (CI version): the same strategy in backtest, paper and testnet
+# against the local mock venue.
+verify-ac-w-07:
+    cargo nextest run -p edbt-cli --test live_mock
+    {{py}} pytest tests/python/test_strategy_parity.py
+
+# AC-W-07 with the real testnet (keys in .env): 10 minutes each of
+# strategies/mm_simple.py in paper and testnet mode, then the replay check.
+demo-modes minutes="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{py}} edbt live --config configs/paper_testnet.toml --duration {{minutes}}m --record
+    {{py}} edbt live --config configs/live_testnet.toml --duration {{minutes}}m --record --i-understand-testnet-only
+    for run in $(ls -d results/live/*/ | tail -2); do {{py}} edbt log replay-strategy --run "$run"; done
+
+# AC-W-12: guard and secret hygiene.
+verify-ac-w-12:
+    cargo nextest run -p edbt-live --test guard
+
+# AC-H-06: replay every recorded testnet session through the strategy.
+verify-ac-h-06 sessions=(data_root + "/live/sessions"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for run in "{{sessions}}"/*/; do {{py}} edbt log replay-strategy --run "$run"; done
+    cargo tree -p edbt-live -e normal --depth 1
+
+# 24 h testnet soak before the gap study (M5 exit): mm_simple on BTCUSDT.
+testnet-soak:
+    {{py}} edbt live --config configs/gap_study_testnet.toml --duration 24h --record --i-understand-testnet-only
+
+# Pull testnet tick, lot, min notional and commission rates into
+# configs/instruments.toml (keys in .env).
+instruments-testnet:
+    {{py}} edbt-ingest instruments --venue binance-usdm-testnet --config configs/live_testnet.toml
+    {{py}} edbt-ingest instruments --venue binance-usdm-testnet --config configs/gap_study_testnet_ethusdt.toml
+
+# Deploy clone + cron watchdog for the 21-day gap study (D-06):
+#   just gap-start <commit> <end-utc>
+gap-start commit end:
+    bash deploy/install_gap_study.sh {{commit}} --cron {{end}}
+
+# Stop the gap study at the end of the current sessions' next check.
+gap-stop:
+    mkdir -p "{{data_root}}/live/state/btcusdt" "{{data_root}}/live/state/ethusdt"
+    touch "{{data_root}}/live/state/btcusdt/STOP" "{{data_root}}/live/state/ethusdt/STOP"
+    for d in "{{data_root}}"/live/sessions/*/; do [ -f "$d/status.json" ] && echo kill > "$d/control" || true; done
+
+# Status of the running gap-study sessions.
+gap-status:
+    @for f in $(ls -t "{{data_root}}"/live/sessions/*/status.json 2>/dev/null | head -2); do echo "$f"; cat "$f"; done
 
 # AC-W-04: ordering proptests (10,000 cases each).
 verify-ac-w-04:

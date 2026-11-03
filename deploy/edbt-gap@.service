@@ -1,0 +1,27 @@
+# systemd alternative to the cron watchdog (needs sudo to install):
+#   sudo cp deploy/edbt-gap@.service /etc/systemd/system/
+#   sudo systemctl enable --now edbt-gap@btcusdt edbt-gap@ethusdt
+# Each instance reads deploy/gap-<instance>.env with EDBT_GAP_CONFIG (config
+# path) and EDBT_GAP_END (end, UTC); the supervisor itself enforces the end
+# date and the no-restart-after-loss-limit rule.
+[Unit]
+Description=edbt gap-study testnet sessions (%i)
+After=network-online.target chrony.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ze
+Group=ze
+Environment=DATA_ROOT=/home/ze/data/event-driven-backtester
+Environment=EDBT_DEPLOY=/home/ze/deploy/event-driven-backtester
+EnvironmentFile=/home/ze/deploy/event-driven-backtester/deploy/gap-%i.env
+ExecStart=/home/ze/deploy/event-driven-backtester/deploy/gap_supervisor.sh %i ${EDBT_GAP_CONFIG} ${EDBT_GAP_END}
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

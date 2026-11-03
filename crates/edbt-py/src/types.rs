@@ -59,6 +59,10 @@ pub fn map_run_error(py: Python<'_>, e: &anyhow::Error) -> PyErr {
         "ConfigError"
     } else if e.downcast_ref::<edbt_data::DataError>().is_some() {
         "DataError"
+    } else if e.downcast_ref::<edbt_live::LiveGuardError>().is_some()
+        || matches!(e.downcast_ref::<edbt_live::LiveError>(), Some(edbt_live::LiveError::Guard(_)))
+    {
+        "LiveGuardError"
     } else if let Some(ee) = e.downcast_ref::<EngineError>() {
         match ee {
             EngineError::Reconciliation { .. } => "ReconciliationError",

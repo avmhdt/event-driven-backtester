@@ -35,6 +35,29 @@ pub enum Command {
     /// Inspect, verify and replay event logs.
     #[command(subcommand)]
     Log(LogCmd),
+    /// Run the local mock venue (tests and demos).
+    #[command(hide = true)]
+    MockVenue(MockArgs),
+}
+
+/// `edbt mock-venue`.
+#[derive(Debug, Args)]
+pub struct MockArgs {
+    /// Write `{"rest_url":..,"ws_url":..}` here once listening.
+    #[arg(long)]
+    pub port_file: PathBuf,
+    /// Stop after this many seconds.
+    #[arg(long)]
+    pub duration_s: Option<u64>,
+    /// Drop market connections after this many seconds.
+    #[arg(long)]
+    pub drop_every_s: Option<u64>,
+    /// Break the depth sequence every this many diffs.
+    #[arg(long)]
+    pub gap_every: Option<u64>,
+    /// Seed of the synthetic market.
+    #[arg(long, default_value_t = 7)]
+    pub seed: u64,
 }
 
 /// `edbt run`.
@@ -139,6 +162,9 @@ pub enum LatencyCmd {
         /// Order channel.
         #[arg(long, default_value = "rest")]
         channel: String,
+        /// Write reports/latency.md here.
+        #[arg(long)]
+        report: Option<PathBuf>,
     },
     /// Fit lognormal parameters and an empirical file.
     Fit {
@@ -151,6 +177,15 @@ pub enum LatencyCmd {
         /// START:END dates (calibration window).
         #[arg(long)]
         window: Option<String>,
+        /// feed_latency Parquet (file or directory).
+        #[arg(long)]
+        feed: Option<PathBuf>,
+        /// Write reports/latency.md here.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Venue id written into the empirical files.
+        #[arg(long, default_value = "binance-usdm-testnet")]
+        venue: String,
     },
 }
 
@@ -287,11 +322,6 @@ pub struct LogArgs {
     pub limit: Option<usize>,
 }
 
-fn not_yet(what: &str, milestone: &str) -> anyhow::Result<i32> {
-    eprintln!("edbt {what}: not implemented yet (arrives in {milestone})");
-    Ok(2)
-}
-
 fn run_cmd(a: &RunArgs) -> anyhow::Result<i32> {
     use crate::runner;
     let cfg = runner::resolve(runner::load_config(&a.config, a.seed, &a.set)?);
@@ -344,9 +374,22 @@ where
         Command::ReplayCheck(a) => crate::log_cmd::replay_check(&a.run),
         Command::Log(LogCmd::Inspect(a)) => crate::log_cmd::inspect(&a),
         Command::Log(LogCmd::Verify(a)) => crate::log_cmd::verify(&a),
-        Command::Log(LogCmd::ReplayStrategy(_)) => not_yet("log replay-strategy", "M5"),
+        Command::Log(LogCmd::ReplayStrategy(a)) => crate::live::replay_cmd(&a.run),
         Command::Bench(a) => crate::bench::run(&a),
-        Command::Live(_) | Command::Kill(_) => not_yet("live", "M5"),
-        Command::Latency(_) => not_yet("latency", "M5"),
+        Command::Live(a) => crate::live::live_cmd(&a),
+        Command::Kill(a) => crate::live::kill_cmd(&a),
+        Command::Latency(LatencyCmd::Measure { config, n, interval_ms, channel, report }) => {
+            crate::live::measure_cmd(&config, n, interval_ms, &channel, report.as_deref())
+        }
+        Command::Latency(LatencyCmd::Fit { input, out, window, feed, report, venue }) => {
+            crate::live::fit_cmd(&input, feed.as_deref(), &out, window.as_deref(), report.as_deref(), &venue, None)
+        }
+        Command::MockVenue(a) => crate::live::mock_cmd(
+            &a.port_file,
+            a.duration_s.map(std::time::Duration::from_secs),
+            a.drop_every_s.map(std::time::Duration::from_secs),
+            a.gap_every,
+            a.seed,
+        ),
     }
 }

@@ -11,10 +11,27 @@ publish = false
 
 [dependencies]
 edbt-core.workspace = true
+edbt-data.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+parquet.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+ureq.workspace = true
+tungstenite.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+tiny_http.workspace = true
+fs4.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

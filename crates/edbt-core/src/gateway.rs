@@ -100,6 +100,74 @@ pub mod reason {
     pub const UNKNOWN_ORDER: &str = "UNKNOWN_ORDER";
 }
 
+impl ExchangeResponse {
+    /// Log form (live sessions, FR-33).
+    #[must_use]
+    pub fn to_rec(&self) -> crate::log::ResponseRec {
+        let mut r = crate::log::ResponseRec {
+            id: self.id.0,
+            ts_exchange: self.ts_exchange,
+            kind: 0,
+            venue_order_id: None,
+            reason: String::new(),
+            price: 0,
+            qty: 0,
+            liquidity: 0,
+            fee: 0,
+            leaves: 0,
+            queue_ahead: None,
+        };
+        match &self.kind {
+            ResponseKind::Accepted { venue_order_id } => r.venue_order_id.clone_from(venue_order_id),
+            ResponseKind::Rejected { reason } => {
+                r.kind = 1;
+                r.reason.clone_from(reason);
+            }
+            ResponseKind::Fill { price, qty, liquidity, fee, leaves, queue_ahead_at_entry } => {
+                r.kind = 2;
+                r.price = *price;
+                r.qty = *qty;
+                r.liquidity = u8::from(*liquidity == Liquidity::Taker);
+                r.fee = *fee;
+                r.leaves = *leaves;
+                r.queue_ahead = *queue_ahead_at_entry;
+            }
+            ResponseKind::Canceled => r.kind = 3,
+            ResponseKind::CancelRejected { reason } => {
+                r.kind = 4;
+                r.reason.clone_from(reason);
+            }
+            ResponseKind::Expired { reason } => {
+                r.kind = 5;
+                r.reason.clone_from(reason);
+            }
+        }
+        r
+    }
+
+    /// Back from the log form; `None` for an unknown kind code.
+    #[must_use]
+    pub fn from_rec(r: &crate::log::ResponseRec) -> Option<Self> {
+        let kind = match r.kind {
+            0 => ResponseKind::Accepted { venue_order_id: r.venue_order_id.clone() },
+            1 => ResponseKind::Rejected { reason: r.reason.clone() },
+            2 => ResponseKind::Fill {
+                price: r.price,
+                qty: r.qty,
+                liquidity: if r.liquidity == 1 { Liquidity::Taker } else { Liquidity::Maker },
+                fee: r.fee,
+                leaves: r.leaves,
+                queue_ahead_at_entry: r.queue_ahead,
+            },
+            3 => ResponseKind::Canceled,
+            4 => ResponseKind::CancelRejected { reason: r.reason.clone() },
+            5 => ResponseKind::Expired { reason: r.reason.clone() },
+            _ => return None,
+        };
+        Some(Self { id: ClientOrderId(r.id), ts_exchange: r.ts_exchange, kind })
+    }
+}
+
 #[doc(hidden)]
 pub mod sealed {
     /// Seals [`super::Gateway`]: implemented only by `edbt-exchange` and

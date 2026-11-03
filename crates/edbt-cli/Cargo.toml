@@ -28,6 +28,10 @@ blake3.workspace = true
 tempfile.workspace = true
 edbt-core.workspace = true
 edbt-data.workspace = true
+edbt-live.workspace = true
+dotenvy.workspace = true
+ctrlc.workspace = true
+url.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 

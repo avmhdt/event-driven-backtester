@@ -60,9 +60,30 @@ def lobster() -> None:
 
 
 @app.command()
-def instruments() -> None:
-    """Pull tick, lot and fee metadata from the testnet (M5)."""
-    _not_yet("instruments", "M5")
+def instruments(
+    venue: Annotated[
+        str, typer.Option(help="Venue id the entries are written under.")
+    ] = "binance-usdm-testnet",
+    config: Annotated[Path, typer.Option(help="Live config naming the venue and symbols.")] = Path(
+        "configs/live_testnet.toml"
+    ),
+    out: Annotated[Path, typer.Option(help="Instrument file to append to.")] = Path(
+        "configs/instruments.toml"
+    ),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the entries; write nothing.")] = False,
+) -> None:
+    """Pull tick, lot and fee metadata from the testnet (needs BINANCE_TESTNET_* keys)."""
+    from edbt.config import Config
+    from edbt.ingest import instruments as inst
+
+    cfg = Config.from_toml(config)
+    rows = inst.pull(cfg)
+    for r in rows:
+        typer.echo(inst.entry(venue, r, "today"))
+    if dry_run:
+        return
+    added = inst.append(out, venue, rows)
+    typer.echo(f"appended {len(added)} entries to {out}: {', '.join(added) or 'none (already present)'}")
 
 
 @app.command("hftbt-export")
