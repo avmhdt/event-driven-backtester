@@ -119,6 +119,8 @@ pub struct LiveStats {
     pub transport_errors: u64,
     /// Fills.
     pub fills: u64,
+    /// Fills by symbol.
+    pub fills_by_symbol: BTreeMap<String, u64>,
     /// Venue-position checks that disagreed twice in a row with the ledger.
     pub venue_recon_violations: u64,
     /// Venue-position checks done.
@@ -672,6 +674,12 @@ impl<G: Gateway> Driver<'_, G> {
         for r in rs {
             if matches!(r.kind, edbt_core::gateway::ResponseKind::Fill { .. }) {
                 self.stats.fills += 1;
+                let sym = self
+                    .engine
+                    .order_symbol(r.id)
+                    .and_then(|i| self.syms.get(i))
+                    .map_or_else(|| "?".to_owned(), |s| s.units.symbol.clone());
+                *self.stats.fills_by_symbol.entry(sym).or_default() += 1;
             }
             self.engine.inject_response(r, ts)?;
         }
@@ -997,6 +1005,7 @@ impl<G: Gateway> Driver<'_, G> {
             "events_processed": self.engine.events_processed(),
             "orders_sent": self.stats.orders_sent,
             "fills": self.stats.fills,
+            "fills_by_symbol": self.stats.fills_by_symbol,
             "venue_rejects": self.stats.venue_rejects,
             "drops": self.stats.drops,
             "book_gaps": self.stats.book_gaps,

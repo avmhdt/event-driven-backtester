@@ -437,13 +437,22 @@ release of each crate that still builds on Rust 1.85.
     BTC-PERPETUAL) and in the base coin for linear USDC perpetuals.
   Fees are the instrument's commissions (testnet commissions cannot be set
   by the account); each fill's fee is taken from the venue's trade record.
-- **2026-11-03 (M5) Inverse contracts: owner decision pending.**
-  BTC-PERPETUAL and ETH-PERPETUAL are inverse: amounts in USD, P&L, margin
+- **2026-11-03 (M5) Linear USDC perpetuals (owner decision).**
+  BTC-PERPETUAL and ETH-PERPETUAL are inverse: amounts in USD; P&L, margin
   and fees in BTC or ETH. The ledger, the simulator's fees and the risk
-  notional are linear. Until the owner chooses between inverse accounting
-  and the linear USDC perpetuals (BTC_USDC-PERPETUAL, ETH_USDC-PERPETUAL),
-  the configs name the linear perpetuals, and `edbt-ingest instruments`
-  refuses to write an inverse instrument.
+  notional are linear. The owner chose the linear perpetuals
+  BTC_USDC-PERPETUAL and ETH_USDC-PERPETUAL ("Yes, use USDC"), so the
+  accounting is unchanged; `edbt-ingest instruments` still refuses to write
+  an inverse instrument.
+  A public read from test.deribit.com at about 23:40 UTC on 2026-11-03
+  (reported by the review session) found:
+  - BTC_USDC-PERPETUAL: 100 trades in about 10 minutes, about $1.8B of
+    24-hour volume.
+  - ETH_USDC-PERPETUAL: 100 trades in about 2.3 hours, about $19M of 24-hour
+    volume.
+  ETH may give few fills. Fills are reported per symbol (`status.json`,
+  `live.json`). If ETH falls short of AC-H-01's fill count, that is reported
+  as a finding; symbols are not swapped mid-run.
 - **2026-11-03 (M5) Deribit order events.**
   - A user-stream trade can arrive before the REST reply that tells the
     order's size; such fills are held until the size is known (from the

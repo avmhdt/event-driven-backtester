@@ -230,6 +230,7 @@ pub fn stats_json(s: &LiveStats, mode: Mode) -> serde_json::Value {
         "venue_rejects": s.venue_rejects,
         "transport_errors": s.transport_errors,
         "fills": s.fills,
+        "fills_by_symbol": s.fills_by_symbol,
         "venue_recon_checks": s.venue_recon_checks,
         "venue_recon_violations": s.venue_recon_violations,
         "kill_confirm_ms": s.kill_confirm_ms,

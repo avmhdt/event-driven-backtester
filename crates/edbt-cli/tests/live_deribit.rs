@@ -105,6 +105,7 @@ fn paper_and_testnet_sessions_on_the_deribit_mock() {
     let s = &tn.run.output.summary;
     assert!(s.n_orders > 0, "{s:?}");
     assert!(tn.stats.fills > 0, "{:?}", tn.stats);
+    assert_eq!(tn.stats.fills_by_symbol.get("BTC_USDC-PERPETUAL").copied(), Some(tn.stats.fills));
     assert_eq!(s.reconciliation_violations, 0);
     assert_eq!(tn.stats.venue_recon_violations, 0, "{:?}", tn.stats);
     assert!(tn.stats.venue_recon_checks > 0);

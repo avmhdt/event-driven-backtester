@@ -1332,6 +1332,12 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
         self.core.now
     }
 
+    /// Symbol index of an order known to the order manager.
+    #[must_use]
+    pub fn order_symbol(&self, id: ClientOrderId) -> Option<usize> {
+        self.core.oms.order(id).map(|o| o.symbol.0 as usize)
+    }
+
     /// Open orders known to the order manager.
     #[must_use]
     pub fn open_order_count(&self) -> usize {
