@@ -233,6 +233,9 @@ pub struct Fit {
     pub outside: usize,
     /// Files written.
     pub files: Vec<PathBuf>,
+    /// The same series over every new-order row in the window, flagged ones
+    /// included (shown while the DQ-12 ruling is open; never fitted).
+    pub all: [Quantiles; 4],
 }
 
 /// Fit latency models on the unflagged new-order rows of `window` (ns,
@@ -253,15 +256,25 @@ pub fn fit(
     let rows = read_order_latency(order_input)?;
     let mut f = Fit::default();
     let mut used = Vec::new();
+    let mut all = Vec::new();
     for r in rows {
         if !inside(r.ts_req_local) {
             f.outside += 1;
-        } else if r.flagged {
+            continue;
+        }
+        if r.kind == "new" {
+            all.push(r.clone());
+        }
+        if r.flagged {
             f.flagged += 1;
         } else if r.kind == "new" {
             used.push(r);
         }
     }
+    let col = |g: fn(&OrderLatencyRow) -> i64| -> Vec<i64> { all.iter().map(g).collect() };
+    f.all[0] = Quantiles::of(&col(|r| r.entry_ns));
+    f.all[1] = Quantiles::of(&col(|r| r.response_ns));
+    f.all[2] = Quantiles::of(&col(|r| r.rtt_ns));
     f.used = used.len();
     let entry: Vec<i64> = used.iter().map(|r| r.entry_ns).collect();
     let response: Vec<i64> = used.iter().map(|r| r.response_ns).collect();
@@ -271,10 +284,12 @@ pub fn fit(
     f.rtt = Quantiles::of(&rtt);
     f.entry_ln = lognormal_fit(&entry);
     f.response_ln = lognormal_fit(&response);
-    let feed: Vec<FeedLatencyRow> = match feed_input {
-        Some(p) => read_feed_latency(p)?.into_iter().filter(|r| inside(r.ts_recv) && !r.flagged).collect(),
+    let feed_all: Vec<FeedLatencyRow> = match feed_input {
+        Some(p) => read_feed_latency(p)?.into_iter().filter(|r| inside(r.ts_recv)).collect(),
         None => Vec::new(),
     };
+    f.all[3] = Quantiles::of(&feed_all.iter().map(|r| r.latency_ns).collect::<Vec<_>>());
+    let feed: Vec<FeedLatencyRow> = feed_all.into_iter().filter(|r| !r.flagged).collect();
     let feed_ns: Vec<i64> = feed.iter().map(|r| r.latency_ns).collect();
     f.feed = Quantiles::of(&feed_ns);
     f.feed_ln = lognormal_fit(&feed_ns);
@@ -334,6 +349,21 @@ pub fn report_md(f: &Fit, source: &str, internal: Option<Quantiles>) -> String {
     row("Feed (venue time to local receipt)", &f.feed);
     if let Some(q) = internal {
         row("Live path inside the engine (receipt to request handed to the client, NFR-03)", &q);
+    }
+    if f.all[0].n > f.entry.n {
+        s.push_str("\nAll new-order rows, including those DQ-12 flags (shown while the owner's ruling on the clock-offset uncertainty is open; none of these are fitted):\n\n");
+        s.push_str("| Series (all rows) | n | p50 ms | p90 ms | p99 ms | p99.9 ms |\n|---|---|---|---|---|---|\n");
+        let names = ["Order entry", "Order response", "Order round trip", "Feed"];
+        for (name, q) in names.iter().zip(&f.all) {
+            s.push_str(&format!(
+                "| {name} | {} | {} | {} | {} | {} |\n",
+                q.n,
+                ms(q.p50),
+                ms(q.p90),
+                ms(q.p99),
+                ms(q.p999)
+            ));
+        }
     }
     s.push_str("\nVenue times have millisecond precision, so entry and response latencies below about 1 ms are not resolved; entry and response each include the remaining clock offset error.\n\n");
     s.push_str("## Fitted parameters\n\n```toml\n");
@@ -740,6 +770,9 @@ mod tests {
         assert_eq!(back.len(), 50);
         let md = report_md(&f, "mock venue (not the testnet)", Some(Quantiles::of(&[1, 2, 3])));
         assert!(md.contains("mock venue") && md.contains("p99.9") && md.contains("entry_mu"));
+        assert_eq!(f.all[0].n, 51);
+        assert_eq!(f.all[3].n, 3);
+        assert!(md.contains("All new-order rows, including those DQ-12 flags"));
         // A directory input finds the file.
         assert_eq!(read_order_latency(&dir.path().join("in")).unwrap().len(), 102);
     }

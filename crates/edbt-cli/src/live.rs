@@ -602,9 +602,17 @@ pub fn fit_cmd(
         println!("wrote      {}", f.display());
     }
     if let Some(rp) = report {
-        let label =
-            if input.to_string_lossy().contains("mock") { "local mock venue" } else { "Binance USD-M futures testnet" };
-        std::fs::write(rp, latency::report_md(&fit, label, internal))?;
+        let label = if venue.contains("mock") || input.to_string_lossy().contains("mock") {
+            "local mock venue (synthetic market, not a venue testnet)".to_owned()
+        } else if venue.starts_with("deribit") {
+            format!(
+                "Deribit testnet (test.deribit.com), every `{venue}` row under {}: `edbt latency measure` round trips and the orders of live sessions",
+                input.display()
+            )
+        } else {
+            "Binance USD-M futures testnet".to_owned()
+        };
+        std::fs::write(rp, latency::report_md(&fit, &label, internal))?;
     }
     Ok(0)
 }
