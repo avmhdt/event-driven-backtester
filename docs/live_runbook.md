@@ -123,9 +123,12 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
   just gap-start <commit> <end-utc>
   ```
 
-  This clones the commit to `~/deploy/event-driven-backtester` (WSL ext4),
-  builds a release virtualenv, links the repository's `.env`, and adds two
-  cron watchdog lines (no sudo). `deploy/gap_supervisor.sh` runs back-to-back
+  Run it from a clone on WSL ext4 (for example `~/build/edbt-src`). It
+  clones the commit to `~/deploy/event-driven-backtester`, builds a release
+  virtualenv, links the credentials file (`~/.config/edbt/deribit-testnet.env`,
+  mode 600), and adds two cron watchdog lines (no sudo). Nothing in the run
+  touches `/mnt` paths or a Windows-side process, so a Windows sign-out
+  (which once broke the `/mnt` mounts) leaves it running. `deploy/gap_supervisor.sh` runs back-to-back
   24 h sessions until the end time, restarts after exit 0 or 3, and stops for
   good after exit 4 or any failure (`$DATA_ROOT/live/state/<name>/STOPPED`).
   `deploy/edbt-gap@.service` is the systemd alternative (needs sudo).

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Prepare the gap-study deploy clone on WSL ext4 (spec 7(d)): a clone of this
 # repository at one commit, its own virtualenv with a release build of the
-# extension, and a link to the repository's .env (never a copy of it).
+# extension, and a link to the credentials file. Run it from a clone on ext4:
+# the run must not depend on /mnt paths or on any Windows-side process, so a
+# Windows sign-out (which can break the /mnt mounts) leaves it running.
 #
 #   deploy/install_gap_study.sh <commit> [--cron <end-utc>]
 #
@@ -18,7 +20,16 @@ if [ ! -d "$deploy/.git" ]; then
 fi
 git -C "$deploy" fetch --quiet "$repo" "$commit"
 git -C "$deploy" checkout --quiet --detach "$commit"
-ln -sfn "$repo/.env" "$deploy/.env"
+# Credentials: the private file on ext4 (EDBT_ENV_FILE), or wherever the
+# source clone's .env resolves to; never a /mnt path.
+env_file="${EDBT_ENV_FILE:-$(readlink -f "$repo/.env")}"
+for p in "$repo" "$deploy" "$env_file"; do
+  case "$p" in
+    /mnt/*) echo "refused: $p is on a Windows mount; use a clone and files on ext4" >&2; exit 2 ;;
+  esac
+done
+[ -r "$env_file" ] || { echo "no credentials file at $env_file" >&2; exit 2; }
+ln -sfn "$env_file" "$deploy/.env"
 cd "$deploy"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/build/event-driven-backtester}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
