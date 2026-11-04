@@ -2,9 +2,8 @@
 # Futures Demo Trading is not available in the owner's region). Only
 # test.deribit.com is allowed; every other *.deribit.com host is refused by
 # the host guard. Credentials come only from DERIBIT_TESTNET_CLIENT_ID and
-# DERIBIT_TESTNET_CLIENT_SECRET. Instruments: the linear USDC perpetuals until
-# the owner rules on the inverse BTC-PERPETUAL / ETH-PERPETUAL (the ledger is
-# linear; docs/decisions.md).
+# DERIBIT_TESTNET_CLIENT_SECRET. Instruments: the linear USDC perpetuals
+# (owner decision; docs/decisions.md).
 #
 # Gap study, ETH series (see gap_study_testnet.toml).
 #
@@ -60,12 +59,12 @@ kind = "python"
 path = "strategies/mm_simple.py"
 class = "MarketMaker"
 [strategy.params]
-# Minimum size: one step of the instrument's minimum amount (pulled with
-# `just instruments-testnet`; set before the run starts).
+# Minimum size: the instrument's minimum amount, 0.0001 (public
+# get_instrument, 2026-11-04); skew about 1 tick per order of inventory.
 half_spread_ticks = 1
-order_qty = 0.01
-max_inventory = 0.1
-skew_ticks_per_unit = 100.0
+order_qty = 0.0001
+max_inventory = 0.001
+skew_ticks_per_unit = 10000.0
 refresh_ns = 500_000_000
 
 [live]
