@@ -277,9 +277,20 @@ pub fn best_clock_sample(rest: &DeribitRest, n: usize) -> Option<ClockSample> {
 /// Transport or venue errors.
 pub fn position(rest: &DeribitRest, instrument: &str) -> Result<f64, String> {
     let v = result(rest.private("private/get_position", &format!("instrument_name={instrument}")))?;
-    let size = v.get("size").and_then(Value::as_f64).unwrap_or(0.0);
+    let size = position_size(instrument, &v);
     let short = v.get("direction").and_then(Value::as_str) == Some("sell");
     Ok(if short && size > 0.0 { -size } else { size })
+}
+
+/// A position in the instrument's order-amount unit. For futures `size` is
+/// in the quote currency and `size_currency` in the base coin (docs read
+/// 2026-11-04); linear perpetuals (the `_USDC-` / `_USDT-` naming
+/// convention) take amounts in the base coin, inverse ones in USD.
+#[must_use]
+pub fn position_size(instrument: &str, v: &Value) -> f64 {
+    let linear = instrument.contains("_USDC-") || instrument.contains("_USDT-");
+    let key = if linear { "size_currency" } else { "size" };
+    v.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
 /// Labels of the open orders of `instrument`.
@@ -405,5 +416,8 @@ mod tests {
         assert_eq!(all, ["book.BTC-PERPETUAL.100ms", "trades.BTC-PERPETUAL.100ms", "quote.BTC-PERPETUAL"]);
         assert_eq!(heartbeat_reply(r#"{"method":"heartbeat","params":{"type":"test_request"}}"#).len(), 1);
         assert!(heartbeat_reply(r#"{"method":"heartbeat","params":{"type":"heartbeat"}}"#).is_empty());
+        let v = json!({"size": 7.7, "size_currency": 0.0001, "direction": "buy"});
+        assert!((position_size("BTC_USDC-PERPETUAL", &v) - 0.0001).abs() < 1e-12);
+        assert!((position_size("BTC-PERPETUAL", &v) - 7.7).abs() < 1e-12);
     }
 }

@@ -367,7 +367,11 @@ fn call(
                 -1 => "sell",
                 _ => "zero",
             };
-            Ok(json!({ "instrument_name": ins.name, "size": px(size, ins.lot), "direction": dir }))
+            // As the venue reports futures: `size` in the quote currency,
+            // `size_currency` in the base coin.
+            let mark = px(st.books[i].mid, ins.tick);
+            Ok(json!({ "instrument_name": ins.name, "size": px(size, ins.lot) * mark,
+                       "size_currency": px(size, ins.lot), "direction": dir }))
         }
         "private/get_open_orders_by_instrument" => {
             let i = inst.ok_or((10020, "invalid instrument".to_owned()))?;
