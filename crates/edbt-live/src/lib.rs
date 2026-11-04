@@ -6,12 +6,14 @@
 //! `edbt-strategies`. Every outbound URL passes the testnet host guard.
 
 pub mod binance;
+pub mod deribit;
 pub mod guard;
 pub mod inbound;
 pub mod latency;
 pub mod live_gateway;
 pub mod live_source;
 pub mod mock;
+pub mod mock_deribit;
 pub mod paper;
 pub mod recorder;
 pub mod session;

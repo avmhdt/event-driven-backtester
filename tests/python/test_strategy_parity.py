@@ -127,3 +127,49 @@ def test_run_live_validates_before_connecting(tmp_path: Path) -> None:
         edbt.run_live("noop", edbt.Config.from_dict(d), duration_s=1)
     with pytest.raises(edbt.EdbtError, match="positive"):
         edbt.run_live("noop", edbt.Config.from_dict(d), duration_s=0)
+
+
+def test_same_strategy_on_the_deribit_mock(
+    canonical_fixture_dir: Path,
+    tmp_path: Path,
+    deribit_mock: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = {
+        "kind": "python",
+        "path": str(REPO / "strategies" / "mm_simple.py"),
+        "class": "MarketMaker",
+        "params": {"refresh_ns": 200_000_000, "order_qty": 0.002, "max_inventory": 0.02},
+    }
+    base = fixture_config_dict(canonical_fixture_dir, tmp_path / "runs", **strategy)
+    base["data"].update(
+        {
+            "venue": "deribit-mock",
+            "symbols": ["BTC_USDC-PERPETUAL"],
+            "instruments": str(FIXTURES / "instruments_mock.toml"),
+        }
+    )
+    base["risk"]["kill_stale_feed_ms"] = 5000
+    base["live"] = {
+        "api": "deribit",
+        "venue": "deribit-mock",
+        "rest_url": deribit_mock["rest_url"],
+        "ws_market_url": deribit_mock["ws_url"],
+        "allowed_hosts": ["127.0.0.1"],
+        "record": False,
+        "session_dir": str(tmp_path / "live"),
+        "tick_interval_ms": 200,
+        "status_interval_s": 1,
+        "reconcile_interval_s": 1,
+    }
+    monkeypatch.setenv("DERIBIT_TESTNET_CLIENT_ID", "mock-client-id")
+    monkeypatch.setenv("DERIBIT_TESTNET_CLIENT_SECRET", "mock-client-secret")
+    for mode in ("paper", "testnet"):
+        d = copy.deepcopy(base)
+        d["run"]["mode"] = mode
+        cfg = edbt.Config.from_dict(d)
+        out = edbt.run_live(load_strategy(cfg), cfg, duration_s=6, confirm_testnet=True)
+        assert out.summary.n_orders > 0, mode
+        assert out.summary.reconciliation_violations == 0
+        assert out.out_dir is not None
+        assert _replay(monkeypatch, out.out_dir) == 0

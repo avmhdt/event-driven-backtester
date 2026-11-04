@@ -12,7 +12,10 @@ against `edbt` (`docs/python_api.md`). `edbt.API_VERSION` follows semver
   and `edbt log replay-strategy`. In Python, `edbt.run_live` now runs
   sessions; its signature is unchanged and the API stays 1.0.0. The same
   strategy runs in backtest, paper and testnet mode.
-- Binance USD-M futures testnet gateway: signed REST, user stream with
+- Deribit testnet adapter (the live venue since the owner's 2026-11-03
+  ruling): OAuth REST, JSON-RPC streams with heartbeats, book sync from the
+  stream's full book and change ids, post-only reject mode, cancel by label.
+- Binance USD-M futures testnet gateway (kept, unused): signed REST, user stream with
   listenKey keepalive, depth sync with snapshots, reconnects with backoff,
   rate-limit handling, venue position reconciliation, start and shutdown
   sweeps, and kill confirmation at the venue.

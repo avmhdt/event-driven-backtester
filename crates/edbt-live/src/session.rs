@@ -44,10 +44,13 @@ use crate::binance::translate::{Translator, Units, venue_client_id};
 use crate::binance::types::{MS, MarketMsg, UserMsg, parse_market, parse_user};
 use crate::binance::ws_market::{StreamTiming, connections};
 use crate::binance::{HouseCmd, spawn_housekeeper, ws_market, ws_user};
+use crate::deribit::rest::DeribitRest;
+use crate::deribit::translate::DeribitTranslator;
+use crate::deribit::types::Rpc;
 use crate::guard::{Credentials, HostGuard};
 use crate::inbound::{Inbound, OrderOp, OrderReply};
 use crate::latency::Quantiles;
-use crate::live_gateway::{OrderCmd, format_units, spawn_order_worker};
+use crate::live_gateway::{Api, OrderCmd, OrderTransport, cancel_request, format_units, spawn_order_worker};
 use crate::live_source::LiveSource;
 use crate::recorder::{
     ClockRow, FeedLatencyRow, GapRow, OrderLatencyRow, RecRow, RecSender, RecorderPaths, RecorderReport,
@@ -64,6 +67,8 @@ const NS_PER_S: i64 = 1_000_000_000;
 pub struct SessionOptions {
     /// Paper or testnet.
     pub mode: Mode,
+    /// Venue protocol.
+    pub api: Api,
     /// Symbols, in engine order.
     pub symbols: Vec<Units>,
     /// `[live]`.
@@ -171,7 +176,54 @@ struct Io {
     workers: Vec<Sender<OrderCmd>>,
     threads: Vec<JoinHandle<()>>,
     recorder: Option<JoinHandle<RecorderReport>>,
-    rest: Arc<RestClient>,
+    rest: VenueRest,
+    resubscribe: Arc<AtomicBool>,
+}
+
+/// The venue's REST client.
+#[derive(Debug, Clone)]
+pub enum VenueRest {
+    /// Binance (HMAC-signed).
+    Binance(Arc<RestClient>),
+    /// Deribit (OAuth token).
+    Deribit(Arc<DeribitRest>),
+}
+
+impl VenueRest {
+    /// The REST client of `o`'s venue.
+    ///
+    /// # Errors
+    /// Guard refusals.
+    pub fn new(o: &SessionOptions, guard: HostGuard) -> Result<Self, LiveError> {
+        Ok(match o.api {
+            Api::Binance => Self::Binance(Arc::new(RestClient::new(
+                &o.live.rest_url,
+                guard,
+                o.creds.clone(),
+                o.live.recv_window_ms,
+            )?)),
+            Api::Deribit => Self::Deribit(Arc::new(DeribitRest::new(&o.live.rest_url, guard, o.creds.clone())?)),
+        })
+    }
+
+    fn transport(&self) -> Arc<dyn OrderTransport> {
+        match self {
+            Self::Binance(r) => r.clone(),
+            Self::Deribit(r) => r.clone(),
+        }
+    }
+
+    /// Cancel the symbols' open orders and, with `flatten`, close their
+    /// positions at the venue (session start and shutdown).
+    ///
+    /// # Errors
+    /// Transport, credential or venue errors.
+    pub fn sweep(&self, symbols: &[Units], flatten: bool) -> Result<(u64, u64), LiveError> {
+        match self {
+            Self::Binance(r) => venue_sweep(r, symbols, flatten),
+            Self::Deribit(r) => crate::deribit::streams::sweep(r, symbols, flatten),
+        }
+    }
 }
 
 /// I/O threads started before the engine exists, so the testnet gateway can
@@ -201,9 +253,10 @@ pub fn start_io(o: &SessionOptions) -> Result<SessionIo, LiveError> {
     if o.mode == Mode::Testnet && o.creds.is_none() {
         return Err(LiveError::NoCredentials);
     }
-    let rest = Arc::new(RestClient::new(&o.live.rest_url, guard.clone(), o.creds.clone(), o.live.recv_window_ms)?);
+    let rest = VenueRest::new(o, guard.clone())?;
     let (tx, rx) = channel();
     let stop = o.stop.clone();
+    let resubscribe = Arc::new(AtomicBool::new(false));
     let timing = StreamTiming {
         read_timeout: Duration::from_millis(250),
         max_age: Duration::from_secs_f64(o.live.max_conn_age_h * 3600.0),
@@ -211,34 +264,77 @@ pub fn start_io(o: &SessionOptions) -> Result<SessionIo, LiveError> {
     };
     let io_err = |e: std::io::Error| LiveError::Io(e.to_string());
     let names: Vec<String> = o.symbols.iter().map(|u| u.symbol.clone()).collect();
+    let clock_every = Duration::from_secs(o.live.clock_sync_interval_s.max(1));
     let mut threads = Vec::new();
-    for (name, url) in
-        connections(&o.live.ws_market_url, &o.live.ws_public_path, &o.live.ws_market_path, &o.live.depth_stream, &names)
-    {
-        threads.push(ws_market::spawn(name, url, guard.clone(), tx.clone(), stop.clone(), timing).map_err(io_err)?);
-    }
     let (house_tx, house_rx) = channel();
-    threads.push(
-        spawn_housekeeper(rest.clone(), house_rx, tx.clone(), Duration::from_secs(o.live.clock_sync_interval_s.max(1)))
-            .map_err(io_err)?,
-    );
+    match &rest {
+        VenueRest::Binance(r) => {
+            for (name, url) in connections(
+                &o.live.ws_market_url,
+                &o.live.ws_public_path,
+                &o.live.ws_market_path,
+                &o.live.depth_stream,
+                &names,
+            ) {
+                threads.push(
+                    ws_market::spawn(name, url, guard.clone(), tx.clone(), stop.clone(), timing).map_err(io_err)?,
+                );
+            }
+            threads.push(spawn_housekeeper(r.clone(), house_rx, tx.clone(), clock_every).map_err(io_err)?);
+            if o.mode == Mode::Testnet {
+                threads.push(
+                    ws_user::spawn(
+                        r.clone(),
+                        o.live.ws_market_url.clone(),
+                        o.live.ws_private_path.clone(),
+                        guard.clone(),
+                        tx.clone(),
+                        stop.clone(),
+                        timing,
+                    )
+                    .map_err(io_err)?,
+                );
+            }
+        }
+        VenueRest::Deribit(r) => {
+            threads.push(
+                crate::deribit::streams::spawn_market(
+                    o.live.ws_market_url.clone(),
+                    names.clone(),
+                    guard.clone(),
+                    tx.clone(),
+                    stop.clone(),
+                    resubscribe.clone(),
+                    timing,
+                )
+                .map_err(io_err)?,
+            );
+            threads.push(
+                crate::deribit::streams::spawn_housekeeper(r.clone(), names.clone(), house_rx, tx.clone(), clock_every)
+                    .map_err(io_err)?,
+            );
+            if let (Mode::Testnet, Some(creds)) = (o.mode, o.creds.clone()) {
+                threads.push(
+                    crate::deribit::streams::spawn_user(
+                        o.live.ws_market_url.clone(),
+                        names.clone(),
+                        creds,
+                        guard.clone(),
+                        tx.clone(),
+                        stop.clone(),
+                        timing,
+                    )
+                    .map_err(io_err)?,
+                );
+            }
+        }
+    }
     let mut workers = Vec::new();
     if o.mode == Mode::Testnet {
-        threads.push(
-            ws_user::spawn(
-                rest.clone(),
-                o.live.ws_market_url.clone(),
-                o.live.ws_private_path.clone(),
-                guard,
-                tx.clone(),
-                stop.clone(),
-                timing,
-            )
-            .map_err(io_err)?,
-        );
         for u in &o.symbols {
             let (wtx, wrx) = channel();
-            threads.push(spawn_order_worker(&u.symbol, rest.clone(), wrx, tx.clone(), stop.clone()).map_err(io_err)?);
+            threads
+                .push(spawn_order_worker(&u.symbol, rest.transport(), wrx, tx.clone(), stop.clone()).map_err(io_err)?);
             workers.push(wtx);
         }
     }
@@ -251,7 +347,32 @@ pub fn start_io(o: &SessionOptions) -> Result<SessionIo, LiveError> {
         }
         None => (RecSender::new(None), None),
     };
-    Ok(SessionIo { io: Io { stop, rx, house: house_tx, workers, threads, recorder, rest }, rec })
+    Ok(SessionIo { io: Io { stop, rx, house: house_tx, workers, threads, recorder, rest, resubscribe }, rec })
+}
+
+/// The venue's order-event translator.
+enum Tr {
+    Binance(Translator),
+    Deribit(DeribitTranslator),
+}
+
+impl Tr {
+    fn on_sent(&mut self, id: edbt_core::ClientOrderId, qty: i64) -> Vec<edbt_core::gateway::ExchangeResponse> {
+        match self {
+            Self::Binance(t) => {
+                t.on_sent(id, qty);
+                Vec::new()
+            }
+            Self::Deribit(t) => t.on_sent(id, qty),
+        }
+    }
+
+    fn working(&self) -> usize {
+        match self {
+            Self::Binance(t) => t.working(),
+            Self::Deribit(t) => t.working(),
+        }
+    }
 }
 
 /// Per-symbol market state.
@@ -276,7 +397,7 @@ struct Driver<'a, G: Gateway> {
     io: Io,
     rec: RecSender,
     syms: Vec<Sym>,
-    translator: Translator,
+    translator: Tr,
     conns: Conns,
     stats: LiveStats,
     batch_counter: i64,
@@ -441,7 +562,15 @@ impl<G: Gateway> Driver<'_, G> {
     fn on_market(&mut self, ts_recv: i64, text: &str) -> Result<(), LiveError> {
         self.stats.market_msgs += 1;
         self.last_market_recv = ts_recv;
-        let msg = match parse_market(text) {
+        let parsed = match self.o.api {
+            Api::Binance => parse_market(text).map(|m| vec![m]),
+            Api::Deribit => match crate::deribit::types::parse_rpc(text) {
+                Ok(Rpc::Notification { channel, data }) => crate::deribit::types::market(&channel, &data),
+                Ok(_) => Ok(Vec::new()),
+                Err(e) => Err(e),
+            },
+        };
+        let msgs = match parsed {
             Ok(m) => m,
             Err(e) => {
                 self.stats.parse_errors += 1;
@@ -449,7 +578,23 @@ impl<G: Gateway> Driver<'_, G> {
                 return Ok(());
             }
         };
+        for msg in msgs {
+            self.on_market_msg(ts_recv, msg)?;
+        }
+        Ok(())
+    }
+
+    fn on_market_msg(&mut self, ts_recv: i64, msg: MarketMsg) -> Result<(), LiveError> {
         match msg {
+            MarketMsg::Snapshot(symbol, snap) => {
+                let Some(i) = self.sym_index(&symbol) else { return Ok(()) };
+                let out = self.syms[i].depth.on_snapshot(snap);
+                if out.need_snapshot {
+                    self.syms[i].snapshot_retry_at = Some(ts_recv + NS_PER_S);
+                }
+                self.apply_batches(i, out.batches, ts_recv)?;
+                self.update_uptime(ts_recv);
+            }
             MarketMsg::Depth(d) => {
                 let Some(i) = self.sym_index(&d.symbol) else { return Ok(()) };
                 self.feed_row("depth", &d.symbol, d.tx_ms * MS, ts_recv);
@@ -509,8 +654,18 @@ impl<G: Gateway> Driver<'_, G> {
     }
 
     fn request_snapshot(&mut self, i: usize) {
-        let _ = self.io.house.send(HouseCmd::Snapshot(i, self.syms[i].units.symbol.clone()));
-        self.syms[i].snapshot_retry_at = None;
+        match self.o.api {
+            Api::Binance => {
+                let _ = self.io.house.send(HouseCmd::Snapshot(i, self.syms[i].units.symbol.clone()));
+                self.syms[i].snapshot_retry_at = None;
+            }
+            Api::Deribit => {
+                // A fresh subscription starts with a full book; ask again in
+                // 5 s if none arrives.
+                self.io.resubscribe.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.syms[i].snapshot_retry_at = Some(wall_ns() + 5 * NS_PER_S);
+            }
+        }
     }
 
     fn inject(&mut self, rs: Vec<edbt_core::gateway::ExchangeResponse>, ts: i64) -> Result<(), LiveError> {
@@ -524,9 +679,30 @@ impl<G: Gateway> Driver<'_, G> {
     }
 
     fn on_user(&mut self, ts_recv: i64, text: &str) -> Result<(), LiveError> {
+        if let Tr::Deribit(t) = &mut self.translator {
+            let evs = match crate::deribit::types::parse_rpc(text) {
+                Ok(Rpc::Notification { channel, data }) => crate::deribit::types::user(&channel, &data),
+                Ok(_) => Ok(Vec::new()),
+                Err(e) => Err(e),
+            };
+            match evs {
+                Ok(evs) => {
+                    let rs: Vec<_> = evs.iter().flat_map(|e| t.on_event(e)).collect();
+                    self.inject(rs, ts_recv)?;
+                }
+                Err(e) => {
+                    self.stats.parse_errors += 1;
+                    tracing::warn!(error = %e, "unparsable user-stream message");
+                }
+            }
+            return Ok(());
+        }
         match parse_user(text) {
             Ok(UserMsg::Order(u)) => {
-                let rs = self.translator.on_update(&u);
+                let rs = match &mut self.translator {
+                    Tr::Binance(t) => t.on_update(&u),
+                    Tr::Deribit(_) => Vec::new(),
+                };
                 self.inject(rs, ts_recv)?;
             }
             Ok(UserMsg::Account(ps)) => {
@@ -555,13 +731,37 @@ impl<G: Gateway> Driver<'_, G> {
                 if let OrderOp::New { qty } = r.op {
                     // The order may be live at the venue: cancel it by client
                     // id, and report it rejected to the engine.
-                    self.translator.on_sent(r.id, qty);
-                    if let Some(w) = self.io.workers.get(r.symbol) {
-                        let params = format!("symbol={symbol}&origClientOrderId={cid}");
-                        let _ = w.send(OrderCmd::Cancel { id: r.id, symbol: r.symbol, params, ts_issue: r.ts_issue });
+                    let early = self.translator.on_sent(r.id, qty);
+                    self.inject(early, wall_ns())?;
+                    if let (Some(w), Some(u)) = (self.io.workers.get(r.symbol), units.as_ref()) {
+                        let (method, path, params) = cancel_request(self.o.api, u, &cid);
+                        let _ = w.send(OrderCmd::Cancel {
+                            id: r.id,
+                            symbol: r.symbol,
+                            method,
+                            path,
+                            params,
+                            ts_issue: r.ts_issue,
+                        });
                     }
-                    let err = crate::binance::types::ApiError { code: -1, msg: "transport".to_owned() };
-                    let mut rs = self.translator.on_new_error(r.id, &err, wall_ns());
+                    let now = wall_ns();
+                    let mut rs = match &mut self.translator {
+                        Tr::Binance(t) => {
+                            let err = crate::binance::types::ApiError { code: -1, msg: "transport".to_owned() };
+                            t.on_new_error(r.id, &err, now)
+                        }
+                        Tr::Deribit(t) => {
+                            let fake = crate::binance::rest::Reply {
+                                status: 0,
+                                body: r#"{"error":{"code":-1,"message":"transport"}}"#.to_owned(),
+                                t_send: now,
+                                t_recv: now,
+                                used_weight_1m: None,
+                                order_count_1m: None,
+                            };
+                            t.on_new_reply(r.id, &fake)
+                        }
+                    };
                     for x in &mut rs {
                         if let edbt_core::gateway::ResponseKind::Rejected { reason } = &mut x.kind {
                             *reason = "TRANSPORT".to_owned();
@@ -573,6 +773,40 @@ impl<G: Gateway> Driver<'_, G> {
             }
         };
         let kind = if matches!(r.op, OrderOp::New { .. }) { "new" } else { "cancel" };
+        if let Tr::Deribit(t) = &mut self.translator {
+            let order = match crate::deribit::types::rest_result(&rep.body) {
+                Ok(Ok(v)) => v.get("order").and_then(|o| crate::deribit::types::order(o).ok()),
+                _ => None,
+            };
+            if let Some(o) = &order {
+                let row = OrderLatencyRow::new(
+                    rep.t_send,
+                    o.updated_ms * MS,
+                    rep.t_recv,
+                    self.stats.offset.offset_ns,
+                    self.stats.offset.trusted(),
+                    kind,
+                    &symbol,
+                    &cid,
+                    &o.state,
+                );
+                self.stats.order_latency.push(row.clone());
+                self.rec.send(RecRow::OrderLatency(row));
+            }
+            let rs = match r.op {
+                OrderOp::New { qty } => {
+                    let mut rs = t.on_sent(r.id, qty);
+                    if order.is_none() {
+                        self.stats.venue_rejects += 1;
+                    }
+                    rs.extend(t.on_new_reply(r.id, &rep));
+                    rs
+                }
+                OrderOp::Cancel => t.on_cancel_reply(r.id, &rep),
+            };
+            return self.inject(rs, rep.t_recv);
+        }
+        let Tr::Binance(translator) = &mut self.translator else { return Ok(()) };
         let ok = (200..300).contains(&rep.status);
         let ack = if ok { crate::binance::types::parse_ack(&rep.body).ok() } else { None };
         if let Some(a) = &ack {
@@ -592,17 +826,17 @@ impl<G: Gateway> Driver<'_, G> {
         }
         let rs = match (r.op, ack, rep.api_error()) {
             (OrderOp::New { qty }, Some(a), _) => {
-                self.translator.on_sent(r.id, qty);
-                self.translator.on_new_ack(r.id, &a)
+                translator.on_sent(r.id, qty);
+                translator.on_new_ack(r.id, &a)
             }
             (OrderOp::New { qty }, None, err) => {
-                self.translator.on_sent(r.id, qty);
+                translator.on_sent(r.id, qty);
                 self.stats.venue_rejects += 1;
                 let err = err.unwrap_or(crate::binance::types::ApiError { code: -2, msg: "bad ack".to_owned() });
-                self.translator.on_new_error(r.id, &err, rep.t_recv)
+                translator.on_new_error(r.id, &err, rep.t_recv)
             }
-            (OrderOp::Cancel, Some(a), _) => self.translator.on_cancel_ack(r.id, &a),
-            (OrderOp::Cancel, None, Some(err)) => self.translator.on_cancel_error(r.id, &err, rep.t_recv),
+            (OrderOp::Cancel, Some(a), _) => translator.on_cancel_ack(r.id, &a),
+            (OrderOp::Cancel, None, Some(err)) => translator.on_cancel_error(r.id, &err, rep.t_recv),
             (OrderOp::Cancel, None, None) => Vec::new(),
         };
         self.inject(rs, rep.t_recv)
@@ -883,7 +1117,10 @@ pub fn run<G: Gateway>(
         engine,
         strategy,
         walls,
-        translator: Translator::new(&o.tag, o.symbols.clone()),
+        translator: match o.api {
+            Api::Binance => Tr::Binance(Translator::new(&o.tag, o.symbols.clone())),
+            Api::Deribit => Tr::Deribit(DeribitTranslator::new(&o.tag, o.symbols.clone())),
+        },
         io,
         rec,
         syms,
@@ -939,6 +1176,10 @@ pub fn run<G: Gateway>(
                 // Everything due goes first, so a replay that processes all
                 // inputs before the tick's time sees the same order.
                 d.step_due(now)?;
+                if let Tr::Deribit(t) = &mut d.translator {
+                    let late = t.poll(now);
+                    d.inject(late, now)?;
+                }
                 d.engine.tick(now, d.strategy)?;
                 d.check_kill(now);
                 d.update_uptime(now);
@@ -1016,7 +1257,7 @@ pub fn run<G: Gateway>(
     }
     d.stats.ended = ended;
     if o.mode == Mode::Testnet {
-        match venue_sweep(&d.io.rest, &o.symbols, o.flatten_at_end) {
+        match d.io.rest.sweep(&o.symbols, o.flatten_at_end) {
             Ok((n, p)) => {
                 d.stats.leftover_orders = n;
                 d.stats.swept_positions = p;

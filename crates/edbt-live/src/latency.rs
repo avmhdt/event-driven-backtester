@@ -11,7 +11,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 use arrow_array::cast::AsArray;
@@ -385,32 +385,51 @@ fn best_bid(rest: &RestClient, symbol: &str) -> Result<f64, LiveError> {
 }
 
 fn feed_rows(
-    rx_tx: (std::sync::mpsc::Receiver<Inbound>, Sender<Inbound>),
+    rx: std::sync::mpsc::Receiver<Inbound>,
     offset: ClockOffset,
     until: &AtomicBool,
+    parse: fn(&str) -> Vec<(String, String, i64)>,
 ) -> Vec<FeedLatencyRow> {
-    let (rx, _keep) = rx_tx;
     let mut out = Vec::new();
     while !until.load(Ordering::Relaxed) {
         let Ok(msg) = rx.recv_timeout(Duration::from_millis(200)) else { continue };
-        if let Inbound::Market { conn, ts_recv, text } = msg {
-            let (sym, venue_ns) = match parse_market(&text) {
-                Ok(MarketMsg::Depth(d)) => (d.symbol, d.tx_ms * MS),
-                Ok(MarketMsg::Trade(t)) => (t.symbol, t.trade_ms * MS),
-                _ => continue,
-            };
-            let recv = ts_recv + offset.offset_ns;
-            out.push(FeedLatencyRow {
-                ts_exchange: venue_ns,
-                ts_recv: recv,
-                stream: conn,
-                symbol: sym,
-                latency_ns: recv - venue_ns,
-                flagged: recv < venue_ns || !offset.trusted(),
-            });
+        if let Inbound::Market { ts_recv, text, .. } = msg {
+            for (stream, sym, venue_ns) in parse(&text) {
+                let recv = ts_recv + offset.offset_ns;
+                out.push(FeedLatencyRow {
+                    ts_exchange: venue_ns,
+                    ts_recv: recv,
+                    stream,
+                    symbol: sym,
+                    latency_ns: recv - venue_ns,
+                    flagged: recv < venue_ns || !offset.trusted(),
+                });
+            }
         }
     }
     out
+}
+
+fn binance_feed(text: &str) -> Vec<(String, String, i64)> {
+    match parse_market(text) {
+        Ok(MarketMsg::Depth(d)) => vec![("depth".to_owned(), d.symbol, d.tx_ms * MS)],
+        Ok(MarketMsg::Trade(t)) => vec![("trades".to_owned(), t.symbol, t.trade_ms * MS)],
+        _ => Vec::new(),
+    }
+}
+
+fn deribit_feed(text: &str) -> Vec<(String, String, i64)> {
+    use crate::deribit::types::{Rpc, market, parse_rpc};
+    let Ok(Rpc::Notification { channel, data }) = parse_rpc(text) else { return Vec::new() };
+    market(&channel, &data)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| match m {
+            MarketMsg::Depth(d) => Some(("depth".to_owned(), d.symbol, d.tx_ms * MS)),
+            MarketMsg::Trade(t) => Some(("trades".to_owned(), t.symbol, t.trade_ms * MS)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Place and cancel `cfg.n` post-only orders far from the touch, recording
@@ -441,9 +460,8 @@ pub fn measure(rest: &RestClient, guard: &HostGuard, cfg: &MeasureCfg) -> Result
     let collect_stop = Arc::new(AtomicBool::new(false));
     let cs = collect_stop.clone();
     let off = offset;
-    let tx_keep = tx.clone();
     drop(tx);
-    let collector = std::thread::spawn(move || feed_rows((rx, tx_keep), off, &cs));
+    let collector = std::thread::spawn(move || feed_rows(rx, off, &cs, binance_feed));
     let mut m = Measurement::default();
     let mut last_clock = Instant::now();
     let base_ts = wall_ns() / 1_000_000;
@@ -511,9 +529,139 @@ pub fn measure(rest: &RestClient, guard: &HostGuard, cfg: &MeasureCfg) -> Result
     Ok(m)
 }
 
+/// Settings of `edbt latency measure` on Deribit.
+#[derive(Debug, Clone)]
+pub struct DeribitMeasureCfg {
+    /// Orders to place (each also cancelled).
+    pub n: usize,
+    /// Pause between orders.
+    pub interval: Duration,
+    /// Distance below the best bid, as a fraction of price.
+    pub distance: f64,
+    /// Instrument units (one lot = the minimum amount).
+    pub units: Units,
+    /// Label tag.
+    pub tag: String,
+    /// WebSocket URL for feed latency.
+    pub ws_url: String,
+}
+
+/// Place and cancel `cfg.n` minimum-size post-only buys far below the touch
+/// on Deribit, recording order and feed latency.
+///
+/// # Errors
+/// Guard, transport or credential errors before the first order.
+pub fn measure_deribit(
+    rest: &crate::deribit::rest::DeribitRest,
+    guard: &HostGuard,
+    cfg: &DeribitMeasureCfg,
+) -> Result<Measurement, LiveError> {
+    use crate::deribit::streams::best_clock_sample;
+    use crate::deribit::types::{order, rest_result};
+    let mut offset = ClockOffset::default();
+    for _ in 0..3 {
+        if let Some(s) = best_clock_sample(rest, crate::binance::CLOCK_BURST) {
+            offset.update(&s);
+        }
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = channel();
+    let market = crate::deribit::streams::spawn_market(
+        cfg.ws_url.clone(),
+        vec![cfg.units.symbol.clone()],
+        guard.clone(),
+        tx,
+        stop.clone(),
+        Arc::new(AtomicBool::new(false)),
+        StreamTiming::default(),
+    )
+    .map_err(|e| LiveError::Io(e.to_string()))?;
+    let collect_stop = Arc::new(AtomicBool::new(false));
+    let cs = collect_stop.clone();
+    let off = offset;
+    let collector = std::thread::spawn(move || feed_rows(rx, off, &cs, deribit_feed));
+    let mut m = Measurement::default();
+    let mut last_clock = Instant::now();
+    let base = wall_ns() / 1_000_000;
+    let sym = &cfg.units.symbol;
+    for i in 0..cfg.n {
+        if last_clock.elapsed() > Duration::from_secs(60) {
+            last_clock = Instant::now();
+            if let Some(s) = best_clock_sample(rest, crate::binance::CLOCK_BURST) {
+                offset.update(&s);
+            }
+        }
+        let book = rest.public("public/get_order_book", &format!("instrument_name={sym}&depth=1"))?;
+        let bid = rest_result(&book.body)
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|v| v.get("best_bid_price").and_then(serde_json::Value::as_f64))
+            .ok_or_else(|| LiveError::Http(format!("no best bid for {sym}")))?;
+        let price_ticks = ((bid * (1.0 - cfg.distance)) / cfg.units.tick).floor() as i64;
+        let label = venue_client_id(&cfg.tag, edbt_core::ClientOrderId(base as u64 * 1000 + i as u64));
+        let q = format!(
+            "instrument_name={sym}&amount={}&type=limit&price={}&time_in_force=good_til_cancelled&post_only=true&reject_post_only=true&label={label}",
+            format_units(1, cfg.units.lot),
+            format_units(price_ticks, cfg.units.tick)
+        );
+        let rep = rest.private("private/buy", &q)?;
+        let placed =
+            rest_result(&rep.body).ok().and_then(Result::ok).and_then(|v| v.get("order").and_then(|o| order(o).ok()));
+        match placed {
+            Some(o) => {
+                m.orders.push(OrderLatencyRow::new(
+                    rep.t_send,
+                    o.updated_ms * MS,
+                    rep.t_recv,
+                    offset.offset_ns,
+                    offset.trusted(),
+                    "new",
+                    sym,
+                    &label,
+                    &o.state,
+                ));
+                let crep = rest.private("private/cancel", &format!("order_id={}", o.order_id))?;
+                if let Some(c) = rest_result(&crep.body).ok().and_then(Result::ok).and_then(|v| order(&v).ok()) {
+                    m.orders.push(OrderLatencyRow::new(
+                        crep.t_send,
+                        c.updated_ms * MS,
+                        crep.t_recv,
+                        offset.offset_ns,
+                        offset.trusted(),
+                        "cancel",
+                        sym,
+                        &label,
+                        &c.state,
+                    ));
+                }
+            }
+            None => {
+                m.rejected += 1;
+                tracing::warn!(status = rep.status, "measurement order rejected");
+            }
+        }
+        std::thread::sleep(cfg.interval);
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = market.join();
+    collect_stop.store(true, Ordering::Relaxed);
+    m.feed = collector.join().unwrap_or_default();
+    Ok(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feed_parsers_pick_depth_and_trades() {
+        let d = r#"{"data":{"e":"depthUpdate","E":10,"T":9,"s":"BTCUSDT","U":5,"u":7,"pu":4,"b":[],"a":[]}}"#;
+        assert_eq!(binance_feed(d), vec![("depth".to_owned(), "BTCUSDT".to_owned(), 9 * MS)]);
+        let t = r#"{"jsonrpc":"2.0","method":"subscription","params":{"channel":"trades.X.100ms","data":[{"trade_seq":1,"trade_id":"a","timestamp":5,"price":1.0,"amount":1.0,"direction":"buy","instrument_name":"X"}]}}"#;
+        assert_eq!(deribit_feed(t), vec![("trades".to_owned(), "X".to_owned(), 5 * MS)]);
+        assert!(deribit_feed("{}").is_empty());
+        assert!(binance_feed("{}").is_empty());
+    }
 
     #[test]
     fn quantiles_nearest_rank() {

@@ -25,3 +25,27 @@ taker_bps = 5.0
 effective_from = "2020-01-01"
 min_notional = 5.0
 source = "edbt_live::mock (synthetic)"
+
+# The Deribit mock (edbt_live::mock_deribit): linear USDC perpetuals with
+# the mock's own tick, minimum amount and fees (maker 0, taker 0.0005).
+[[instrument]]
+venue = "deribit-mock"
+symbol = "BTC_USDC-PERPETUAL"
+tick_size = 0.5
+lot_size = 0.001
+contract_type = "linear_perp"
+maker_bps = 0.0
+taker_bps = 5.0
+effective_from = "2020-01-01"
+source = "edbt_live::mock_deribit (synthetic)"
+
+[[instrument]]
+venue = "deribit-mock"
+symbol = "ETH_USDC-PERPETUAL"
+tick_size = 0.05
+lot_size = 0.01
+contract_type = "linear_perp"
+maker_bps = 0.0
+taker_bps = 5.0
+effective_from = "2020-01-01"
+source = "edbt_live::mock_deribit (synthetic)"

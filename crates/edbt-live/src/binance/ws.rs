@@ -147,9 +147,36 @@ pub fn read_loop(
     mut on_text: impl FnMut(i64, &str) -> Result<(), String>,
     mut poll: impl FnMut() -> Result<(), String>,
 ) -> Ended {
+    read_loop_rpc(
+        ws,
+        stop,
+        max_age,
+        stale_after,
+        |t, s| on_text(t, s).map(|()| Vec::new()),
+        || poll().map(|()| Vec::new()),
+    )
+}
+
+fn send_all(ws: &mut Ws, out: Vec<String>) -> Result<(), Ended> {
+    for m in out {
+        ws.send(Message::text(m)).map_err(|e| Ended::Error(super::rest::redact(&e.to_string())))?;
+    }
+    Ok(())
+}
+
+/// As [`read_loop`], for request/response protocols (JSON-RPC): `on_text`
+/// and `poll` return messages to send (subscriptions, heartbeat replies).
+pub fn read_loop_rpc(
+    ws: &mut Ws,
+    stop: &AtomicBool,
+    max_age: Duration,
+    stale_after: Duration,
+    mut on_text: impl FnMut(i64, &str) -> Result<Vec<String>, String>,
+    mut poll: impl FnMut() -> Result<Vec<String>, String>,
+) -> Ended {
     let opened = Instant::now();
     let mut last_msg = Instant::now();
-    let mut last_poll = Instant::now();
+    let mut last_poll: Option<Instant> = None;
     loop {
         if stop.load(Ordering::Relaxed) {
             let _ = ws.close(None);
@@ -164,40 +191,46 @@ pub fn read_loop(
         if last_msg.elapsed() >= stale_after {
             return Ended::Stale;
         }
-        if last_poll.elapsed() >= Duration::from_secs(1) {
-            last_poll = Instant::now();
-            if let Err(r) = poll() {
-                return Ended::Handler(r);
-            }
-        }
-        match ws.read() {
-            Ok(Message::Text(t)) => {
-                last_msg = Instant::now();
-                if let Err(r) = on_text(wall_ns(), t.as_str()) {
-                    return Ended::Handler(r);
-                }
-            }
-            Ok(Message::Binary(b)) => {
-                last_msg = Instant::now();
-                if let Ok(t) = std::str::from_utf8(&b) {
-                    if let Err(r) = on_text(wall_ns(), t) {
-                        return Ended::Handler(r);
+        if last_poll.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+            last_poll = Some(Instant::now());
+            match poll() {
+                Ok(out) => {
+                    if let Err(e) = send_all(ws, out) {
+                        return e;
                     }
                 }
+                Err(r) => return Ended::Handler(r),
             }
+        }
+        let text = match ws.read() {
+            Ok(Message::Text(t)) => Some(t.as_str().to_owned()),
+            Ok(Message::Binary(b)) => std::str::from_utf8(&b).ok().map(str::to_owned),
             Ok(Message::Close(_)) => return Ended::Closed,
             Ok(_) => {
                 // Ping, pong or raw frame: tungstenite queues the pong reply.
                 last_msg = Instant::now();
                 let _ = ws.flush();
+                None
             }
             Err(tungstenite::Error::Io(e))
                 if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
             {
                 let _ = ws.flush();
+                None
             }
             Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => return Ended::Closed,
             Err(e) => return Ended::Error(super::rest::redact(&e.to_string())),
+        };
+        if let Some(t) = text {
+            last_msg = Instant::now();
+            match on_text(wall_ns(), &t) {
+                Ok(out) => {
+                    if let Err(e) = send_all(ws, out) {
+                        return e;
+                    }
+                }
+                Err(r) => return Ended::Handler(r),
+            }
         }
     }
 }

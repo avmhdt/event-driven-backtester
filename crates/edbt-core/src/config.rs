@@ -462,6 +462,8 @@ impl Default for StrategyCfg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LiveCfg {
+    /// Venue protocol: `binance_usdm` or `deribit`.
+    pub api: String,
     /// Venue id of recordings.
     pub venue: String,
     /// REST base URL.
@@ -516,6 +518,7 @@ pub struct LiveCfg {
 impl Default for LiveCfg {
     fn default() -> Self {
         Self {
+            api: "binance_usdm".to_owned(),
             venue: "binance-usdm-testnet".to_owned(),
             rest_url: String::new(),
             ws_market_url: String::new(),

@@ -153,6 +153,9 @@ pub enum MarketMsg {
     Trade(AggTrade),
     /// BBO.
     Ticker(BookTicker),
+    /// A full book sent by the stream itself (Deribit's first book
+    /// notification after subscribing).
+    Snapshot(String, DepthSnapshot),
     /// Anything else (subscription acks).
     Other,
 }

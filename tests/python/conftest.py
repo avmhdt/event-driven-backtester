@@ -64,17 +64,16 @@ def _results_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EDBT_RESULTS_DIR", str(tmp_path / "results"))
 
 
-@pytest.fixture
-def mock_venue(tmp_path: Path) -> Iterator[dict[str, str]]:
+def _mock(tmp_path: Path, proto: str) -> Iterator[dict[str, str]]:
     """The local mock venue in a subprocess (`edbt mock-venue`)."""
-    port_file = tmp_path / "mock.json"
+    port_file = tmp_path / f"mock-{proto}.json"
     proc = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "from edbt._cli import main; main()",
             "mock-venue",
-            *("--port-file", str(port_file), "--duration-s", "300"),
+            *("--port-file", str(port_file), "--duration-s", "300", "--proto", proto),
         ],
         stdout=subprocess.DEVNULL,
     )
@@ -87,3 +86,15 @@ def mock_venue(tmp_path: Path) -> Iterator[dict[str, str]]:
     yield urls
     proc.terminate()
     proc.wait(timeout=20)
+
+
+@pytest.fixture
+def mock_venue(tmp_path: Path) -> Iterator[dict[str, str]]:
+    """The Binance-protocol mock venue."""
+    yield from _mock(tmp_path, "binance")
+
+
+@pytest.fixture
+def deribit_mock(tmp_path: Path) -> Iterator[dict[str, str]]:
+    """The Deribit-protocol mock venue."""
+    yield from _mock(tmp_path, "deribit")

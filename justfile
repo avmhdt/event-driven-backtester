@@ -158,15 +158,15 @@ verify-ac-h-06 sessions=(data_root + "/live/sessions"):
     for run in "{{sessions}}"/*/; do {{py}} edbt log replay-strategy --run "$run"; done
     cargo tree -p edbt-live -e normal --depth 1
 
-# 24 h testnet soak before the gap study (M5 exit): mm_simple on BTCUSDT.
+# 24 h testnet soak before the gap study (M5 exit): mm_simple on BTC.
 testnet-soak:
     {{py}} edbt live --config configs/gap_study_testnet.toml --duration 24h --record --i-understand-testnet-only
 
-# Pull testnet tick, lot, min notional and commission rates into
-# configs/instruments.toml (keys in .env).
+# Pull testnet tick, minimum amount and commissions into
+# configs/instruments.toml (Deribit: public get_instrument, no key needed).
 instruments-testnet:
-    {{py}} edbt-ingest instruments --venue binance-usdm-testnet --config configs/live_testnet.toml
-    {{py}} edbt-ingest instruments --venue binance-usdm-testnet --config configs/gap_study_testnet_ethusdt.toml
+    {{py}} edbt-ingest instruments --venue deribit-testnet --config configs/live_testnet.toml
+    {{py}} edbt-ingest instruments --venue deribit-testnet --config configs/gap_study_testnet_eth.toml
 
 # Deploy clone + cron watchdog for the 21-day gap study (D-06):
 #   just gap-start <commit> <end-utc>
@@ -175,8 +175,8 @@ gap-start commit end:
 
 # Stop the gap study at the end of the current sessions' next check.
 gap-stop:
-    mkdir -p "{{data_root}}/live/state/btcusdt" "{{data_root}}/live/state/ethusdt"
-    touch "{{data_root}}/live/state/btcusdt/STOP" "{{data_root}}/live/state/ethusdt/STOP"
+    mkdir -p "{{data_root}}/live/state/btc" "{{data_root}}/live/state/eth"
+    touch "{{data_root}}/live/state/btc/STOP" "{{data_root}}/live/state/eth/STOP"
     for d in "{{data_root}}"/live/sessions/*/; do [ -f "$d/status.json" ] && echo kill > "$d/control" || true; done
 
 # Status of the running gap-study sessions.

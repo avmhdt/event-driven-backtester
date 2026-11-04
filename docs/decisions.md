@@ -382,3 +382,83 @@ release of each crate that still builds on Rust 1.85.
   post-only buys 5% below the best bid, sized at 1.05 times the minimum
   notional, each cancelled at once, with feed latency from the depth and
   trade streams during the run.
+- **2026-11-03 (M5) Venue changed to the Deribit testnet (owner ruling).**
+  Binance Futures Demo Trading is not available in the owner's region (the
+  Cayman Islands), which explains the `-2015` refusals of both Binance keys;
+  no VPN or proxy is allowed. The live venue is the D-02 fallback, the
+  Deribit testnet: host `test.deribit.com` only, for REST and WebSocket. The
+  host guard refuses `www.deribit.com`, `deribit.com` and every other
+  `*.deribit.com` host, as it refuses Binance mainnet. Credentials are read
+  only from `DERIBIT_TESTNET_CLIENT_ID` and `DERIBIT_TESTNET_CLIENT_SECRET`.
+  D-06 now names BTC and ETH perpetuals on Deribit instead of BTCUSDT and
+  ETHUSDT, with mm_simple at minimum size, 7 calibration days and 14
+  evaluation days. The Binance adapter stays in the code (`live.api =
+  "binance_usdm"`), unused.
+- **2026-11-03 (M5) Deribit facts.** From the Deribit API docs read
+  2026-11-03 (JSON-RPC reference, OpenAPI and AsyncAPI specs):
+  - REST is `https://test.deribit.com/api/v2/<method>`, WebSocket
+    `wss://test.deribit.com/ws/api/v2`.
+  - Auth is `public/auth` with `client_credentials`, giving an access token
+    and a refresh token (each refresh replaces the pair); REST private calls
+    carry `Authorization: Bearer`, and a WebSocket auth authenticates that
+    connection.
+  - `book.<i>.100ms` sends the full book first after each subscription,
+    then changes `[action, price, amount]` with `change_id` and
+    `prev_change_id`; on a gap the docs advise re-subscribing.
+  - `trades.<i>.100ms` and `quote.<i>` are public; `user.orders.<i>.raw`
+    and `user.trades.<i>.raw` are private.
+  - `public/set_heartbeat` makes the server send `test_request`, which must
+    be answered with `public/test` or the connection is closed.
+  - A post-only order that would take is repriced by default and rejected
+    with `11054` (`post_only_reject`) when `reject_post_only` is set.
+  - `private/cancel_by_label` returns the number of orders cancelled.
+  - `public/get_instrument` gives tick size, minimum amount, contract size,
+    maker and taker commission, and `instrument_type` (`linear` or
+    `reversed`).
+- **2026-11-03 (M5) What carries over and what is venue-specific.** The
+  session driver, live source, depth sync, recorder, replay, risk path, kill
+  confirmation and reconciliation are shared. Deribit needs its own:
+  - streams: JSON-RPC subscriptions over one WebSocket, heartbeats;
+  - book sync: the stream's own full book instead of a REST snapshot, and a
+    re-subscription after a `change_id` gap (`first = prev_change_id`, so
+    the shared bridging rule applies);
+  - REST auth: an OAuth token with refresh instead of HMAC signing;
+  - order formatting: `private/buy` and `private/sell` with
+    `post_only=true&reject_post_only=true` for GTX, so a would-be taker is
+    rejected (expired as `POST_ONLY_WOULD_CROSS`) rather than repriced as
+    the venue does by default; cancel by label;
+  - the translator: orders by label, fills from user trades, deduplicated by
+    trade id;
+  - start and end sweeps, and the instrument pull.
+  Units differ by instrument:
+  - tick size and minimum amount (the amount step) come from
+    `public/get_instrument`;
+  - amounts are in USD for inverse contracts (contract size 10 USD for
+    BTC-PERPETUAL) and in the base coin for linear USDC perpetuals.
+  Fees are the instrument's commissions (testnet commissions cannot be set
+  by the account); each fill's fee is taken from the venue's trade record.
+- **2026-11-03 (M5) Inverse contracts: owner decision pending.**
+  BTC-PERPETUAL and ETH-PERPETUAL are inverse: amounts in USD, P&L, margin
+  and fees in BTC or ETH. The ledger, the simulator's fees and the risk
+  notional are linear. Until the owner chooses between inverse accounting
+  and the linear USDC perpetuals (BTC_USDC-PERPETUAL, ETH_USDC-PERPETUAL),
+  the configs name the linear perpetuals, and `edbt-ingest instruments`
+  refuses to write an inverse instrument.
+- **2026-11-03 (M5) Deribit order events.**
+  - A user-stream trade can arrive before the REST reply that tells the
+    order's size; such fills are held until the size is known (from the
+    reply or the order event), so leaves are never computed against an
+    unknown size.
+  - A confirmed cancel by label does not end the order by itself. The order
+    event that follows carries the venue's filled amount, and the order ends
+    only once every fill up to that amount has arrived. If the order event
+    never comes (user stream down), the order ends 2 s after the confirmed
+    cancel; a held end whose fills never arrive is released after 5 s.
+  - Without this, a fill made just before a cancel was dropped, and the
+    venue position drifted from the ledger; the mock test caught it.
+- **2026-11-03 (M5) Deribit mock.** `edbt_live::mock_deribit` speaks the
+  same REST methods and JSON-RPC WebSocket on loopback, with the synthetic
+  book model of the Binance mock. It checks the mock client credentials and
+  bearer token, sends a full book after each subscription, can skip change
+  ids and drop connections, and sends `test_request` heartbeats.
+  `edbt mock-venue --proto deribit` runs it for the Python tests.

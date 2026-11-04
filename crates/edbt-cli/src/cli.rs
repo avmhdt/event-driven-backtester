@@ -58,6 +58,9 @@ pub struct MockArgs {
     /// Seed of the synthetic market.
     #[arg(long, default_value_t = 7)]
     pub seed: u64,
+    /// Protocol: binance or deribit.
+    #[arg(long, default_value = "binance")]
+    pub proto: String,
 }
 
 /// `edbt run`.
@@ -390,6 +393,7 @@ where
             a.drop_every_s.map(std::time::Duration::from_secs),
             a.gap_every,
             a.seed,
+            &a.proto,
         ),
     }
 }

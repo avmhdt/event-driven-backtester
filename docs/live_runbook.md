@@ -1,16 +1,23 @@
 # Live runbook
 
 Paper and testnet sessions (FR-21 to FR-23, FR-33): setup, daily operation,
-the kill switch, recovery, and the 21-day gap-study run. Testnet only: the
-host guard refuses mainnet hosts at config load and on every request, and
-keys are read only from `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`.
+the kill switch, recovery, and the 21-day gap-study run.
+
+The venue is the Deribit testnet (`live.api = "deribit"`, host
+`test.deribit.com` only), the D-02 fallback. Binance Futures Demo Trading is
+not available in the owner's region; the Binance adapter stays in the code
+(`live.api = "binance_usdm"`) but no config uses it. Testnet only: the host
+guard refuses mainnet hosts (any `*.deribit.com` other than
+`test.deribit.com`, and the Binance mainnet hosts) at config load and on
+every request. Credentials are read only from `DERIBIT_TESTNET_CLIENT_ID` /
+`DERIBIT_TESTNET_CLIENT_SECRET` (Binance: `BINANCE_TESTNET_*`).
 
 ## Modes
 
 | Mode | Market data | Orders | Keys |
 |---|---|---|---|
 | `paper` | testnet streams | simulated exchange (configured latency and queue models) | no |
-| `testnet` | testnet streams | Binance USD-M futures testnet | yes |
+| `testnet` | testnet streams | the testnet venue | yes |
 
 Both run the same strategy, order manager and risk checks; only the gateway
 differs. Every session writes a directory with the usual run files
@@ -34,15 +41,17 @@ with gap rows (`gaps`), clock samples (`clock`) and latency rows
 
 ## First-time setup (owner)
 
-1. Create an HMAC key on the USD-M futures testnet (demo trading, futures),
-   with futures trading enabled and no IP restriction. Put it in `.env`:
-   `BINANCE_TESTNET_API_KEY=...` and `BINANCE_TESTNET_API_SECRET=...`.
-2. `just testnet-ping`: the unsigned `/fapi/v1/time` reaches the hosts.
-3. `just instruments-testnet`: appends tick, lot, minimum notional
-   (`exchangeInfo`) and the account's commission rates (`commissionRate`) to
-   `configs/instruments.toml` as `venue = "binance-usdm-testnet"`.
-4. Set `order_qty` in the session configs to the smallest size above the
-   pulled minimum notional with room for price moves.
+1. Create an API key on test.deribit.com with trading permission. Put it
+   in `.env`: `DERIBIT_TESTNET_CLIENT_ID=...` and
+   `DERIBIT_TESTNET_CLIENT_SECRET=...`.
+2. `just testnet-ping`: the unsigned `public/get_time` reaches the host.
+3. `just instruments-testnet`: appends tick size, minimum amount and the
+   venue's commissions (`public/get_instrument`; testnet commissions cannot
+   be set by the account) to `configs/instruments.toml` as
+   `venue = "deribit-testnet"`. Inverse contracts are refused: the ledger is
+   linear.
+4. Set `order_qty` in the session configs to the pulled minimum amount.
+   Each fill's fee is taken from the venue's trade record.
 
 ## Running a session
 
@@ -102,9 +111,10 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
 
 ## The 21-day gap study (D-06)
 
-- Two series of daily sessions, BTCUSDT (`configs/gap_study_testnet.toml`)
-  and ETHUSDT (`configs/gap_study_testnet_ethusdt.toml`), mm_simple at minimum
-  size, recorded.
+- Two series of daily sessions, BTC (`configs/gap_study_testnet.toml`) and
+  ETH (`configs/gap_study_testnet_eth.toml`), mm_simple at minimum size,
+  recorded (the sim side of the study replays the venue's own recorded
+  book).
 - Days 1-7 calibrate, days 8-21 evaluate; no fit ever sees an evaluation day
   (DQ-13).
 - Start (after the 24 h soak, `just testnet-soak`):

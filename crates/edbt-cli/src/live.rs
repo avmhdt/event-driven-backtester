@@ -24,7 +24,7 @@ use edbt_live::binance::rest::RestClient;
 use edbt_live::binance::translate::Units;
 use edbt_live::guard::{Credentials, HostGuard};
 use edbt_live::latency::{self, MeasureCfg, Quantiles};
-use edbt_live::live_gateway::LiveGateway;
+use edbt_live::live_gateway::{Api, LiveGateway};
 use edbt_live::live_source::LiveSource;
 use edbt_live::mock::{MockCfg, MockVenue};
 use edbt_live::recorder::{HourlyWriter, RecorderPaths};
@@ -54,11 +54,14 @@ pub fn record_root(record_dir: &str) -> PathBuf {
     if p.is_absolute() { p } else { data_root() }
 }
 
-/// Load `.env` (if present) so `BINANCE_TESTNET_*` can be read; nothing
-/// else from it is used.
-fn credentials() -> Option<Credentials> {
+/// Load `.env` (if present) and read the venue's testnet credentials:
+/// `BINANCE_TESTNET_*` or `DERIBIT_TESTNET_*`; nothing else from it is used.
+fn credentials(api: Api) -> Option<Credentials> {
     let _ = dotenvy::from_filename(".env");
-    Credentials::from_env()
+    match api {
+        Api::Binance => Credentials::from_env(),
+        Api::Deribit => Credentials::deribit_from_env(),
+    }
 }
 
 /// Options of a live session.
@@ -147,9 +150,11 @@ pub fn plan(cfg: &Config, o: &LiveRunOpts) -> anyhow::Result<LivePlan> {
             symbols: symbols.iter().map(|u| u.symbol.clone()).collect(),
         }
     });
-    let creds = if cfg.run.mode == Mode::Testnet { o.creds.clone().or_else(credentials) } else { None };
+    let api = Api::parse(&live.api)?;
+    let creds = if cfg.run.mode == Mode::Testnet { o.creds.clone().or_else(|| credentials(api)) } else { None };
     let opts = SessionOptions {
         mode: cfg.run.mode,
+        api,
         symbols,
         live,
         duration: o.duration,
@@ -174,15 +179,17 @@ pub fn execute(p: &LivePlan, strategy: &mut dyn Strategy) -> anyhow::Result<Sess
     let log = dir.join("events.log.zst");
     match p.cfg.run.mode {
         Mode::Testnet => {
-            let creds = p.opts.creds.clone().ok_or(edbt_live::LiveError::NoCredentials)?;
+            if p.opts.creds.is_none() {
+                return Err(edbt_live::LiveError::NoCredentials.into());
+            }
             let guard = HostGuard::new(&p.opts.live.allowed_hosts)?;
-            let rest = RestClient::new(&p.opts.live.rest_url, guard, Some(creds), p.opts.live.recv_window_ms)?;
-            let (cancelled, closed) = session::venue_sweep(&rest, &p.opts.symbols, p.cfg.risk.flatten_on_kill)?;
+            let rest = session::VenueRest::new(&p.opts, guard)?;
+            let (cancelled, closed) = rest.sweep(&p.opts.symbols, p.cfg.risk.flatten_on_kill)?;
             if cancelled + closed > 0 {
                 eprintln!("start sweep: cancelled {cancelled} open orders, closed {closed} positions at the venue");
             }
             let sio = session::start_io(&p.opts)?;
-            let gw = LiveGateway::new(&p.opts.tag, p.opts.symbols.clone(), sio.workers());
+            let gw = LiveGateway::new(p.opts.api, &p.opts.tag, p.opts.symbols.clone(), sio.workers());
             let mut engine = Engine::new(&p.cfg, p.specs.clone(), Some(&log), LiveSource::new(), gw, WallClock)?;
             Ok(session::run(&p.opts, sio, &mut engine, strategy, &mut |g: &mut LiveGateway| g.take_submit_walls())?)
         }
@@ -484,7 +491,9 @@ pub fn replay_cmd(run: &Path) -> anyhow::Result<i32> {
 fn source_label(rest_url: &str) -> String {
     let host = url::Url::parse(rest_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
     if edbt_live::guard::is_loopback(&host) {
-        "local mock venue (synthetic market, not the Binance testnet; numbers only show the pipeline works)".to_owned()
+        "local mock venue (synthetic market, not a venue testnet; numbers only show the pipeline works)".to_owned()
+    } else if host.ends_with("deribit.com") {
+        format!("Deribit testnet ({host})")
     } else {
         format!("Binance USD-M futures testnet ({host})")
     }
@@ -507,7 +516,11 @@ pub fn measure_cmd(
     let cfg = runner::resolve(runner::load_config(config, None, &[])?);
     let live = cfg.live.clone().ok_or_else(|| anyhow!("[live] is required"))?;
     let guard = HostGuard::new(&live.allowed_hosts)?;
-    let creds = credentials().ok_or(edbt_live::LiveError::NoCredentials)?;
+    let api = Api::parse(&live.api)?;
+    let creds = credentials(api).ok_or(edbt_live::LiveError::NoCredentials)?;
+    if api == Api::Deribit {
+        return measure_deribit(&cfg, &live, guard, creds, n, interval_ms, report);
+    }
     let rest = RestClient::new(&live.rest_url, guard.clone(), Some(creds), live.recv_window_ms)?;
     let table = InstrumentTable::load(&runner::expand(&cfg.data.instruments))?;
     let inst =
@@ -606,10 +619,29 @@ pub fn mock_cmd(
     drop_every: Option<Duration>,
     gap_every: Option<u64>,
     seed: u64,
+    proto: &str,
 ) -> anyhow::Result<i32> {
+    use edbt_live::mock_deribit::{DeribitMock, DeribitMockCfg};
+    enum Running {
+        Binance(MockVenue),
+        Deribit(DeribitMock),
+    }
     let stop = signal_stop();
-    let m = MockVenue::start(MockCfg { seed, drop_every, gap_every, ..MockCfg::default() })?;
-    let info = json!({ "rest_url": m.rest_url(), "ws_url": m.ws_url() });
+    let m = match proto {
+        "binance" => Running::Binance(MockVenue::start(MockCfg { seed, drop_every, gap_every, ..MockCfg::default() })?),
+        "deribit" => Running::Deribit(DeribitMock::start(DeribitMockCfg {
+            seed,
+            drop_every,
+            gap_every,
+            ..DeribitMockCfg::default()
+        })?),
+        other => bail!("--proto {other:?}: expected binance or deribit"),
+    };
+    let (rest, ws) = match &m {
+        Running::Binance(v) => (v.rest_url(), v.ws_url()),
+        Running::Deribit(v) => (v.rest_url(), v.ws_url()),
+    };
+    let info = json!({ "rest_url": rest, "ws_url": ws, "proto": proto });
     let tmp = port_file.with_extension("tmp");
     std::fs::write(&tmp, info.to_string())?;
     std::fs::rename(&tmp, port_file)?;
@@ -618,7 +650,10 @@ pub fn mock_cmd(
     while !stop.load(Ordering::Relaxed) && duration.is_none_or(|d| t.elapsed() < d) {
         std::thread::sleep(Duration::from_millis(100));
     }
-    m.stop();
+    match m {
+        Running::Binance(v) => v.stop(),
+        Running::Deribit(v) => v.stop(),
+    }
     Ok(0)
 }
 
@@ -652,15 +687,42 @@ pub fn pull_instruments(cfg: &Config, creds: Option<Credentials>) -> anyhow::Res
     use edbt_live::binance::types::{parse_commission, parse_exchange_info};
     let live = cfg.live.clone().ok_or_else(|| anyhow!("[live] is required"))?;
     let guard = HostGuard::new(&live.allowed_hosts)?;
-    let creds = creds.or_else(credentials).ok_or(edbt_live::LiveError::NoCredentials)?;
+    let api = Api::parse(&live.api)?;
+    let host = url::Url::parse(&live.rest_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+    let today = edbt_core::time::utc_date(wall_ns());
+    if api == Api::Deribit {
+        // Public: tick, minimum amount and the commissions the venue applies
+        // (they cannot be set on the testnet).
+        let rest = edbt_live::deribit::rest::DeribitRest::new(&live.rest_url, guard, None)?;
+        let infos = edbt_live::deribit::streams::pull_instruments(&rest, &cfg.data.symbols)?;
+        let mut out = Vec::new();
+        for i in infos {
+            if i.instrument_type == "reversed" {
+                bail!(
+                    "{} is an inverse contract (amounts in USD, P&L and fees in {}); the ledger is linear: see docs/decisions.md",
+                    i.name,
+                    i.settlement_currency
+                );
+            }
+            out.push(PulledInstrument {
+                symbol: i.name,
+                tick_size: i.tick_size,
+                lot_size: i.min_trade_amount,
+                min_notional: None,
+                maker_rate: format!("{}", i.maker_commission),
+                taker_rate: format!("{}", i.taker_commission),
+                source: format!("GET /api/v2/public/get_instrument on {host}, read {today}"),
+            });
+        }
+        return Ok(out);
+    }
+    let creds = creds.or_else(|| credentials(api)).ok_or(edbt_live::LiveError::NoCredentials)?;
     let rest = RestClient::new(&live.rest_url, guard, Some(creds), live.recv_window_ms)?;
     let info = rest.public(Method::Get, "/fapi/v1/exchangeInfo", "")?;
     if info.status != 200 {
         bail!("exchangeInfo: HTTP {}", info.status);
     }
     let filters = parse_exchange_info(&info.body, &cfg.data.symbols)?;
-    let host = url::Url::parse(&live.rest_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
-    let today = edbt_core::time::utc_date(wall_ns());
     let mut out = Vec::new();
     for f in filters {
         let rep = rest.signed(Method::Get, "/fapi/v1/commissionRate", &format!("symbol={}", f.symbol))?;
@@ -679,4 +741,69 @@ pub fn pull_instruments(cfg: &Config, creds: Option<Credentials>) -> anyhow::Res
         });
     }
     Ok(out)
+}
+
+/// `edbt latency measure` on Deribit: post-only buys far below the touch,
+/// each cancelled by order id; feed latency from the market stream.
+fn measure_deribit(
+    cfg: &Config,
+    live: &edbt_core::config::LiveCfg,
+    guard: HostGuard,
+    creds: Credentials,
+    n: u32,
+    interval_ms: u64,
+    report: Option<&Path>,
+) -> anyhow::Result<i32> {
+    let table = InstrumentTable::load(&runner::expand(&cfg.data.instruments))?;
+    let inst =
+        live_instruments(cfg, &table, wall_ns())?.into_iter().next().ok_or_else(|| anyhow!("no symbol configured"))?;
+    let rest = edbt_live::deribit::rest::DeribitRest::new(&live.rest_url, guard.clone(), Some(creds))?;
+    let units = Units { symbol: inst.symbol.clone(), tick: inst.tick_size, lot: inst.lot_size };
+    let mc = edbt_live::latency::DeribitMeasureCfg {
+        n: n as usize,
+        interval: Duration::from_millis(interval_ms),
+        distance: 0.05,
+        units,
+        tag: session::session_tag(),
+        ws_url: live.ws_market_url.clone(),
+    };
+    eprintln!("measuring {n} new+cancel pairs on {} every {interval_ms} ms", inst.symbol);
+    let m = latency::measure_deribit(&rest, &guard, &mc)?;
+    write_measurement(live, &m, report, &mc.tag)
+}
+
+fn write_measurement(
+    live: &edbt_core::config::LiveCfg,
+    m: &latency::Measurement,
+    report: Option<&Path>,
+    tag: &str,
+) -> anyhow::Result<i32> {
+    let root = record_root(&live.record_dir).join("processed").join("latency");
+    let mut ow: HourlyWriter<edbt_live::recorder::OrderLatencyRow> = HourlyWriter::new(&root, &live.venue, None);
+    for r in m.orders.iter().cloned() {
+        ow.push(r)?;
+    }
+    ow.close()?;
+    let mut fw: HourlyWriter<edbt_live::recorder::FeedLatencyRow> = HourlyWriter::new(&root, &live.venue, None);
+    for r in m.feed.iter().cloned() {
+        fw.push(r)?;
+    }
+    fw.close()?;
+    let tmp = tempfile::tempdir()?;
+    for (i, f) in ow.closed.iter().enumerate() {
+        std::fs::copy(f, tmp.path().join(format!("o{i}.parquet")))?;
+    }
+    let ftmp = tempfile::tempdir()?;
+    for (i, f) in fw.closed.iter().enumerate() {
+        std::fs::copy(f, ftmp.path().join(format!("f{i}.parquet")))?;
+    }
+    let fit = latency::fit(tmp.path(), Some(ftmp.path()), &root.join("fit").join(tag), None, &live.venue)?;
+    println!("rows       {} order ({} rejected), {} feed", m.orders.len(), m.rejected, m.feed.len());
+    println!("written    {}", root.display());
+    println!("{}", latency::fit_toml(&fit));
+    if let Some(rp) = report {
+        std::fs::write(rp, latency::report_md(&fit, &source_label(&live.rest_url), None))?;
+        println!("report     {}", rp.display());
+    }
+    Ok(0)
 }

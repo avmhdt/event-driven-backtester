@@ -24,8 +24,8 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/build/event-driven-backtester
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 UV_PROJECT_ENVIRONMENT="$deploy/.venv-run" uv sync --frozen --no-dev --python 3.12
 echo "deployed $(git -C "$deploy" rev-parse --short HEAD) to $deploy"
-lines="*/5 * * * * $deploy/deploy/gap_supervisor.sh btcusdt $deploy/configs/gap_study_testnet.toml END
-*/5 * * * * $deploy/deploy/gap_supervisor.sh ethusdt $deploy/configs/gap_study_testnet_ethusdt.toml END"
+lines="*/5 * * * * $deploy/deploy/gap_supervisor.sh btc $deploy/configs/gap_study_testnet.toml END
+*/5 * * * * $deploy/deploy/gap_supervisor.sh eth $deploy/configs/gap_study_testnet_eth.toml END"
 if [ "${2:-}" = "--cron" ]; then
   end="$3"
   lines="${lines//END/$end}"
