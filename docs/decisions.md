@@ -379,6 +379,37 @@ release of each crate that still builds on Rust 1.85.
   exit 4 (loss limit) still stops it at once. During a halt each session
   ends after `kill_stale_feed_ms` with no market data, and the supervisor
   starts the next one (the time shows as downtime; no threshold changed).
+- **2026-11-05 (M5) Venue downtime is excluded from judged uptime (owner
+  decision of 2026-11-05).** A second testnet outage (feed stopped about
+  12:25 UTC; `public/auth` answered HTTP 502 from 12:26 to at least 13:11;
+  then `public/status` `locked: true` for every index) stopped both soak
+  series after ten failed starts. The owner ruled:
+  1. "Outage-tolerant, then rerun": the supervisor waits out venue outages
+     and logs them as venue downtime instead of counting them as failures,
+     then a fresh 24 h soak starts once both markets read open. Code change
+     only, no threshold change.
+  2. "Exclude it, report it": the uptime figure measures our system while
+     the venue is open. Venue-reported downtime is excluded and published
+     separately as its own figure. The 99% bar stays.
+
+  Venue downtime is defined strictly: only time the venue itself reports as
+  not open (an instrument `state` other than `open` in
+  `public/get_order_book`, `public/status` `locked: true` or our index in
+  `locked_indices`) or HTTP 5xx replies from the venue. Our process, our
+  network and the owner's ISP count against us; so do Deribit JSON-RPC
+  errors such as `11094 internal_server_error` that arrive without a 5xx
+  status, refused credentials, and the time between the start of an outage
+  and the supervisor's next check (up to `kill_stale_feed_ms` plus a
+  minute). `edbt venue-status` makes the check (exit 0 open, 5 venue down,
+  6 unknown). `deploy/gap_supervisor.sh` runs it before each session and
+  every minute while the venue is down, writes each interval to
+  `$DATA_ROOT/live/venue_downtime/<name>.csv`, and after an exit 1 counts
+  the failure toward the ten-in-a-row stop only if the venue reads open; a
+  venue it cannot reach (our network) is retried with the same backoff but
+  never stops the series. `python -m edbt.soak` (`just soak-report`)
+  reports both figures per series: uptime excluding venue downtime (judged
+  against 99%) and including it, with venue and our own downtime in
+  minutes. The same applies to the 21-day run.
 - **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
   receive time, `N` the first unused index (a restart in the same hour adds
   a file), so `list_partition_files` orders them like the shared capture's

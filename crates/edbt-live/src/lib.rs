@@ -17,6 +17,7 @@ pub mod mock_deribit;
 pub mod paper;
 pub mod recorder;
 pub mod session;
+pub mod venue_status;
 pub mod wall_clock;
 
 pub use guard::{Credentials, HostGuard, LiveGuardError, Secret};

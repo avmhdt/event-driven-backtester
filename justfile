@@ -179,6 +179,11 @@ gap-stop:
     touch "{{data_root}}/live/state/btc/STOP" "{{data_root}}/live/state/eth/STOP"
     for d in "{{data_root}}"/live/sessions/*/; do [ -f "$d/status.json" ] && echo kill > "$d/control" || true; done
 
+# Uptime of both gap-study series over a window, venue downtime excluded
+# (judged against 99%) and included:  just soak-report <from-utc> <to-utc>
+soak-report from to:
+    {{py}} python -m edbt.soak --from {{from}} --to {{to}} --series btc=BTC_USDC-PERPETUAL --series eth=ETH_USDC-PERPETUAL
+
 # Status of the running gap-study sessions.
 gap-status:
     @for f in $(ls -t "{{data_root}}"/live/sessions/*/status.json 2>/dev/null | head -2); do echo "$f"; cat "$f"; done

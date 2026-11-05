@@ -156,3 +156,20 @@ fn kill_switch_and_resubscribe_after_gaps_on_the_deribit_mock() {
     assert_eq!(r.run.output.summary.reconciliation_violations, 0);
     m.stop();
 }
+
+#[test]
+fn venue_status_reports_venue_downtime() {
+    let m = DeribitMock::start(DeribitMockCfg::default()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config("testnet", &m, tmp.path(), "");
+    let creds = opts(1).creds;
+    let s = live::venue_status(&cfg, creds.clone()).unwrap();
+    assert_eq!((s.line(), s.exit_code()), ("open".to_owned(), 0));
+    m.set_venue_state("halted");
+    let s = live::venue_status(&cfg, creds.clone()).unwrap();
+    assert_eq!((s.line(), s.exit_code()), ("down: BTC_USDC-PERPETUAL halted".to_owned(), 5));
+    m.set_venue_state("open");
+    m.set_http_error(Some(503));
+    assert_eq!(live::venue_status(&cfg, creds).unwrap().exit_code(), 5);
+    m.stop();
+}

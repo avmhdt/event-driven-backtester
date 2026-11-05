@@ -135,6 +135,21 @@ impl DeribitRest {
         }
     }
 
+    /// HTTP status of a fresh `client_credentials` login, for venue-status
+    /// checks (5xx is venue downtime). The reply holds tokens and is dropped.
+    ///
+    /// # Errors
+    /// No credentials, guard or transport errors.
+    pub fn auth_status(&self) -> Result<u16, LiveError> {
+        let creds = self.creds.as_ref().ok_or(LiveError::NoCredentials)?;
+        let query = format!(
+            "grant_type=client_credentials&client_id={}&client_secret={}",
+            enc(&creds.api_key),
+            enc(creds.secret.expose())
+        );
+        Ok(self.get("public/auth", &query, None)?.status)
+    }
+
     fn bearer(&self) -> Result<String, LiveError> {
         let mut tok = self.token.lock().map_err(|_| LiveError::Io("token lock poisoned".to_owned()))?;
         if tok.access.is_empty() || wall_ns() > tok.expires_at - 60_000_000_000 {

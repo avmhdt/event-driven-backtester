@@ -116,6 +116,11 @@ struct State {
     next_conn: u64,
     users: Vec<(Vec<String>, Sender<String>)>,
     requests: BTreeMap<String, u64>,
+    /// Instrument `state` in `public/get_order_book` (`open`, `halted`,
+    /// `locked`, ...); `locked` also lists the indices in `public/status`.
+    venue_state: String,
+    /// Answer every REST call with this HTTP status (a 5xx outage).
+    http_error: Option<u16>,
 }
 
 fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -355,7 +360,18 @@ fn call(
             let ins = &st.cfg.instruments[i];
             let m = st.books[i].mid;
             Ok(
-                json!({ "instrument_name": ins.name, "best_bid_price": px(m - 1, ins.tick), "best_ask_price": px(m + 1, ins.tick) }),
+                json!({ "instrument_name": ins.name, "best_bid_price": px(m - 1, ins.tick), "best_ask_price": px(m + 1, ins.tick),
+                       "state": st.venue_state }),
+            )
+        }
+        "public/status" => {
+            let locked: Vec<String> = if st.venue_state == "locked" {
+                st.cfg.instruments.iter().map(|i| crate::venue_status::deribit_index(&i.name)).collect()
+            } else {
+                Vec::new()
+            };
+            Ok(
+                json!({ "locked": if locked.is_empty() { json!(false) } else { json!("partial") }, "locked_indices": locked }),
             )
         }
         "private/get_position" => {
@@ -608,6 +624,8 @@ impl DeribitMock {
             next_conn: 0,
             users: Vec::new(),
             requests: BTreeMap::new(),
+            venue_state: "open".to_owned(),
+            http_error: None,
             cfg: cfg.clone(),
         };
         for (i, ins) in cfg.instruments.iter().enumerate() {
@@ -648,6 +666,11 @@ impl DeribitMock {
                             let authed = req.headers().iter().any(|h| {
                                 h.field.equiv("Authorization") && h.value.as_str() == format!("Bearer {TOKEN}")
                             });
+                            if let Some(code) = lock(&state).http_error {
+                                let body = format!("<html><body>{code} Bad Gateway</body></html>");
+                                let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(code));
+                                continue;
+                            }
                             let url = req.url().to_owned();
                             let (path, query) = url.split_once('?').unwrap_or((&url, ""));
                             let method = path.trim_start_matches("/api/v2/").to_owned();
@@ -721,6 +744,16 @@ impl DeribitMock {
     #[must_use]
     pub fn requests(&self) -> BTreeMap<String, u64> {
         lock(&self.state).requests.clone()
+    }
+
+    /// Set the instruments' `state` (`open`, `halted`, `locked`, ...).
+    pub fn set_venue_state(&self, state: &str) {
+        state.clone_into(&mut lock(&self.state).venue_state);
+    }
+
+    /// Answer every REST call with this HTTP status, or serve normally.
+    pub fn set_http_error(&self, code: Option<u16>) {
+        lock(&self.state).http_error = code;
     }
 
     /// Stop every thread.

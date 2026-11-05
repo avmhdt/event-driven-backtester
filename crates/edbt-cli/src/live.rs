@@ -22,6 +22,7 @@ use edbt_core::time::compact_utc;
 use edbt_data::instruments::{Instrument, InstrumentTable};
 use edbt_live::binance::rest::RestClient;
 use edbt_live::binance::translate::Units;
+use edbt_live::deribit::rest::DeribitRest;
 use edbt_live::guard::{Credentials, HostGuard};
 use edbt_live::latency::{self, MeasureCfg, Quantiles};
 use edbt_live::live_gateway::{Api, LiveGateway};
@@ -29,6 +30,7 @@ use edbt_live::live_source::LiveSource;
 use edbt_live::mock::{MockCfg, MockVenue};
 use edbt_live::recorder::{HourlyWriter, RecorderPaths};
 use edbt_live::session::{self, LiveStats, SessionOptions, SessionReport, replay};
+use edbt_live::venue_status::{self, VenueStatus};
 use edbt_live::wall_clock::{WallClock, wall_ns};
 use serde_json::json;
 
@@ -62,6 +64,34 @@ fn credentials(api: Api) -> Option<Credentials> {
         Api::Binance => Credentials::from_env(),
         Api::Deribit => Credentials::deribit_from_env(),
     }
+}
+
+/// Is the venue open for `cfg`'s symbols? In testnet mode, `creds` (or the
+/// `*_TESTNET_*` variables) also let it check that the venue's login answers
+/// below HTTP 500.
+///
+/// # Errors
+/// A missing `[live]` table, an unknown `live.api` or a refused host.
+pub fn venue_status(cfg: &Config, creds: Option<Credentials>) -> anyhow::Result<VenueStatus> {
+    let live = cfg.live.clone().ok_or_else(|| anyhow!("[live] is required"))?;
+    let guard = HostGuard::new(&live.allowed_hosts)?;
+    let api = Api::parse(&live.api)?;
+    let creds = if cfg.run.mode == Mode::Testnet { creds.or_else(|| credentials(api)) } else { None };
+    Ok(match api {
+        Api::Deribit => venue_status::deribit(&DeribitRest::new(&live.rest_url, guard, creds)?, &cfg.data.symbols),
+        Api::Binance => venue_status::binance(&RestClient::new(&live.rest_url, guard, None, live.recv_window_ms)?),
+    })
+}
+
+/// `edbt venue-status --config <file>`.
+///
+/// # Errors
+/// See [`venue_status`].
+pub fn venue_status_cmd(config: &Path) -> anyhow::Result<i32> {
+    let cfg = runner::resolve(runner::load_config(config, None, &[])?);
+    let s = venue_status(&cfg, None)?;
+    println!("{}", s.line());
+    Ok(s.exit_code())
 }
 
 /// Options of a live session.
@@ -702,7 +732,7 @@ pub fn pull_instruments(cfg: &Config, creds: Option<Credentials>) -> anyhow::Res
     if api == Api::Deribit {
         // Public: tick, minimum amount and the commissions the venue applies
         // (they cannot be set on the testnet).
-        let rest = edbt_live::deribit::rest::DeribitRest::new(&live.rest_url, guard, None)?;
+        let rest = DeribitRest::new(&live.rest_url, guard, None)?;
         let infos = edbt_live::deribit::streams::pull_instruments(&rest, &cfg.data.symbols)?;
         let mut out = Vec::new();
         for i in infos {
@@ -766,7 +796,7 @@ fn measure_deribit(
     let table = InstrumentTable::load(&runner::expand(&cfg.data.instruments))?;
     let inst =
         live_instruments(cfg, &table, wall_ns())?.into_iter().next().ok_or_else(|| anyhow!("no symbol configured"))?;
-    let rest = edbt_live::deribit::rest::DeribitRest::new(&live.rest_url, guard.clone(), Some(creds))?;
+    let rest = DeribitRest::new(&live.rest_url, guard.clone(), Some(creds))?;
     let units = Units { symbol: inst.symbol.clone(), tick: inst.tick_size, lot: inst.lot_size };
     let mc = edbt_live::latency::DeribitMeasureCfg {
         n: n as usize,

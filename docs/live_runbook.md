@@ -129,10 +129,18 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
   mode 600), and adds two cron watchdog lines (no sudo). Nothing in the run
   touches `/mnt` paths or a Windows-side process, so a Windows sign-out
   (which once broke the `/mnt` mounts) leaves it running. `deploy/gap_supervisor.sh` runs back-to-back
-  24 h sessions until the end time, restarts after exit 0 or 3, stops for
-  good after exit 4 (`$DATA_ROOT/live/state/<name>/STOPPED`), and retries
-  any other failure after 1, 2, ... 10 minutes, stopping after ten in a row.
-  Remove `STOPPED` to let the watchdog start the series again.
+  24 h sessions until the end time, restarts after exit 0 or 3, and stops
+  for good after exit 4 (`$DATA_ROOT/live/state/<name>/STOPPED`). Before
+  each session it runs `edbt venue-status --config <file>` (exit 0 open, 5
+  venue down, 6 unknown); while the venue reports not open or answers HTTP
+  5xx it waits, checking every minute, and logs the interval to
+  `$DATA_ROOT/live/venue_downtime/<name>.csv`. Another failure (exit 1) is
+  retried after 1, 2, ... 10 minutes; ten in a row with the venue open stop
+  the series. Remove `STOPPED` to let the watchdog start the series again.
+- Uptime, both ways (owner decision of 2026-11-05, `docs/decisions.md`):
+  `just soak-report <from-utc> <to-utc>` prints, per series, the uptime
+  excluding venue downtime (judged against 99%) and including it, venue and
+  own downtime, drops, fills and venue reconciliation violations.
   `deploy/edbt-gap@.service` is the systemd alternative (needs sudo).
 - The end time must fall before 2026-12-06 (Windows Update paused until
   then; no reboot during the run).

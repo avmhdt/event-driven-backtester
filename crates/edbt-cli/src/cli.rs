@@ -26,6 +26,9 @@ pub enum Command {
     Live(LiveArgs),
     /// Trigger the kill switch of a running live session.
     Kill(KillArgs),
+    /// Is the venue open? Prints one line; exits 0 open, 5 venue down
+    /// (venue-reported or HTTP 5xx), 6 unknown (counts against us).
+    VenueStatus(VenueStatusArgs),
     /// Latency measurement and fitting.
     #[command(subcommand)]
     Latency(LatencyCmd),
@@ -138,6 +141,14 @@ pub struct LiveArgs {
     /// Required for run.mode = testnet.
     #[arg(long)]
     pub i_understand_testnet_only: bool,
+}
+
+/// `edbt venue-status`.
+#[derive(Debug, Args)]
+pub struct VenueStatusArgs {
+    /// Live config (venue, REST URL, symbols).
+    #[arg(long)]
+    pub config: PathBuf,
 }
 
 /// `edbt kill`.
@@ -381,6 +392,7 @@ where
         Command::Bench(a) => crate::bench::run(&a),
         Command::Live(a) => crate::live::live_cmd(&a),
         Command::Kill(a) => crate::live::kill_cmd(&a),
+        Command::VenueStatus(a) => crate::live::venue_status_cmd(&a.config),
         Command::Latency(LatencyCmd::Measure { config, n, interval_ms, channel, report }) => {
             crate::live::measure_cmd(&config, n, interval_ms, &channel, report.as_deref())
         }
