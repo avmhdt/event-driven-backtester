@@ -3,6 +3,7 @@ and the console script's live and kill commands."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -111,3 +112,13 @@ def test_console_script_live_and_kill(
     # `edbt kill` writes the control file the running session polls.
     assert _main(monkeypatch, "kill", "--session", str(sessions[0])) == 0
     assert (sessions[0] / "control").read_text() == "kill"
+
+
+@pytest.mark.parametrize(
+    ("ended", "code"),
+    [(None, 0), ("stale_feed", 3), ("reject_burst", 3), ("max_loss", 4), ("max_drawdown", 4)],
+)
+def test_python_live_exit_code_matches_rust(tmp_path: Path, ended: str | None, code: int) -> None:
+    # The gap-study supervisor restarts after 0 or 3 and stops after 4.
+    (tmp_path / "live.json").write_text(json.dumps({"ended_by_kill": ended}))
+    assert _cli._live_exit_code(tmp_path) == code

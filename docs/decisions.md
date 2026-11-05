@@ -370,6 +370,15 @@ release of each crate that still builds on Rust 1.85.
   cron watchdog every 5 minutes with `flock` (the pattern the vol-surface
   cron uses) and stops at a fixed end time. `deploy/edbt-gap@.service` is
   the systemd alternative.
+- **2026-11-05 (M5) Supervisor retries failed starts.** During a Deribit
+  testnet maintenance halt (2026-11-04 about 18:09 UTC to 2026-11-05 11:28
+  UTC; instrument state `halted`, then `locked` and `settlement`) one BTC
+  session start got `11094 internal_server_error`, exited 1, and the
+  supervisor stopped that series for good. Exit 1 is now retried after 1,
+  2, ... 10 minutes, and only the tenth failure in a row stops the series;
+  exit 4 (loss limit) still stops it at once. During a halt each session
+  ends after `kill_stale_feed_ms` with no market data, and the supervisor
+  starts the next one (the time shows as downtime; no threshold changed).
 - **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
   receive time, `N` the first unused index (a restart in the same hour adds
   a file), so `list_partition_files` orders them like the shared capture's

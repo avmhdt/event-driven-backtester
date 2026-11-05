@@ -8,6 +8,7 @@ and ``edbt log replay-strategy`` run in this process.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -94,7 +95,22 @@ def _python_live(argv: list[str]) -> int | None:
     print(f"pnl        {s.pnl_total:.9f}  fees {s.fees_total:.9f}")
     print(f"recon      {s.reconciliation_violations} violations")
     print(f"run_hash   {res.run_hash}")
-    return 0
+    if res.out_dir is None:
+        raise edbt.EdbtError("the live session wrote no run directory")
+    return _live_exit_code(res.out_dir)
+
+
+def _live_exit_code(out_dir: Path) -> int:
+    """Exit code of `edbt live`, the same as the Rust CLI's.
+
+    0 for a normal end; 4 when a loss limit (`max_loss`, `max_drawdown`)
+    ended the session, so a supervisor does not restart it; 3 for any other
+    kill.
+    """
+    ended = json.loads((out_dir / "live.json").read_text()).get("ended_by_kill")
+    if ended is None:
+        return 0
+    return 4 if ended in ("max_loss", "max_drawdown") else 3
 
 
 def _seconds(text: str) -> float:

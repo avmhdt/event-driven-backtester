@@ -129,8 +129,10 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
   mode 600), and adds two cron watchdog lines (no sudo). Nothing in the run
   touches `/mnt` paths or a Windows-side process, so a Windows sign-out
   (which once broke the `/mnt` mounts) leaves it running. `deploy/gap_supervisor.sh` runs back-to-back
-  24 h sessions until the end time, restarts after exit 0 or 3, and stops for
-  good after exit 4 or any failure (`$DATA_ROOT/live/state/<name>/STOPPED`).
+  24 h sessions until the end time, restarts after exit 0 or 3, stops for
+  good after exit 4 (`$DATA_ROOT/live/state/<name>/STOPPED`), and retries
+  any other failure after 1, 2, ... 10 minutes, stopping after ten in a row.
+  Remove `STOPPED` to let the watchdog start the series again.
   `deploy/edbt-gap@.service` is the systemd alternative (needs sudo).
 - The end time must fall before 2026-12-06 (Windows Update paused until
   then; no reboot during the run).

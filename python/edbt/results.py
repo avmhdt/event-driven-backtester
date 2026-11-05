@@ -208,8 +208,9 @@ def run_live(
     """Run a paper or testnet session with the same strategy as in a backtest.
 
     Paper mode trades against the simulated exchange on live testnet market
-    data; testnet mode sends orders to the Binance USD-M futures testnet
-    (keys from ``BINANCE_TESTNET_*`` only). The session ends after
+    data; testnet mode sends orders to the venue's testnet (Binance USD-M
+    futures or Deribit; keys from ``BINANCE_TESTNET_*`` or
+    ``DERIBIT_TESTNET_*`` only). The session ends after
     ``duration_s`` seconds; its directory holds the usual run files plus
     ``status.json``, ``live.json``, ``drops.csv`` and, in testnet mode,
     ``order_latency.parquet``.
