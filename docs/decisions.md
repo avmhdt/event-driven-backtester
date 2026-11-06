@@ -273,3 +273,241 @@ release of each crate that still builds on Rust 1.85.
   bench`, criterion benches, `edbt-study throughput`) is merged and was run
   locally to check it works; `reports/throughput.md` holds no numbers until
   the reference run.
+- **2026-11-03 (M5) Testnet endpoints and routing.** The USD-M "General Info"
+  page (last modified 2026-10-30, read 2026-11-03) gives the testnet REST
+  base `https://demo-fapi.binance.com` and WebSocket base
+  `wss://demo-fstream.binance.com`. Since 2026-04-23 the WebSocket routes by
+  path: depth and bookTicker under `/public`, aggTrade under `/market`, user
+  data under `/private` (the "Important WebSocket Change Notice"). The user
+  stream page shows `/private/ws/<listenKey>`; the notice also shows a
+  `?listenKey=` form, so the path is config (`live.ws_private_path`). Checked
+  on 2026-11-03: a 2-minute paper session on the `/public/stream` and
+  `/market/stream` routes of `demo-fstream` ran with uptime 0.98, 0 book
+  gaps and 0 drops, and its replay reproduced all 652 logged intents. The
+  private route waits for a working key (next entry).
+- **2026-11-03 (M5) Testnet keys refused.** With the keys in `.env`, both
+  `demo-fapi.binance.com` and `testnet.binancefuture.com` answer `-2015
+  Invalid API-key, IP, or permissions for action`, even to the key-only
+  `POST /fapi/v1/listenKey`; public endpoints answer 200. No order was sent.
+  Raised with the owner (P-10). The 24 h soak and the gap study wait for a
+  working key.
+- **2026-11-03 (M5) Testnet instruments.** Public `exchangeInfo` on
+  `demo-fapi` (2026-11-03): BTCUSDT tick 0.10, step 0.0001, minimum notional
+  50; ETHUSDT tick 0.01, step 0.001, minimum notional 20; limits 6,000
+  request weight per minute, 1,200 orders per minute, 300 orders per 10 s.
+  The BTCUSDT step differs from the mainnet value of 0.001. Commission rates
+  need the signed `commissionRate`, so `configs/instruments.toml` gets its
+  testnet entries from `just instruments-testnet` once a key works; nothing
+  is typed in.
+- **2026-11-03 (M5) Venue error codes.** From the error-code page and the
+  2023-03-22 FOK/GTX notice: a post-only order that would take is refused at
+  the REST call with `-5022` (no user-stream event), a FOK that cannot fill
+  with `-5021`; both map to the simulator's expiry reasons
+  (`POST_ONLY_WOULD_CROSS`, `FOK_NOT_FILLABLE`). Cancels of unknown orders
+  (`-2011`, `-2013`) map to `UNKNOWN_ORDER`. Expiry reason `er` 1 and 3 are
+  self-trade prevention, 2 an IOC remainder, 9 a market remainder. Orders
+  carry `selfTradePreventionMode=EXPIRE_TAKER` (GTC and IOC only), the
+  simulator's rule. The signing test uses the documented known-answer
+  vector.
+- **2026-11-03 (M5) Blocking I/O on threads, rustls with ring.** The adapter
+  uses blocking HTTP (ureq) and WebSocket (tungstenite) clients on threads:
+  one per market connection, the user stream, one order worker per symbol
+  (requests for a symbol reach the venue in send order, as in the
+  simulator), a housekeeper and a recorder. TLS is rustls with the ring
+  provider and webpki roots, so Windows builds need no NASM or CMake. The
+  spec's tokio test server is replaced by `edbt_live::mock`, a threaded mock
+  on loopback that generates a seeded synthetic market instead of replaying
+  JSON fixtures. It checks API keys and HMAC signatures, refuses crossing
+  post-only orders with `-5022`, fills resting orders on synthetic trades,
+  and can drop connections and break the depth sequence on purpose. The
+  host guard allows `http` and `ws` only for an allowlisted loopback host.
+- **2026-11-03 (M5) One engine, logged live inputs.** The engine gained live
+  hooks: a source may be `pending` (empty but not finished), and
+  `inject_response`, `tick`, `control` and `stop` move it to a wall time at
+  least one nanosecond after everything it has processed. Each market
+  message gets one effective exchange time (venue time in local-clock terms,
+  non-decreasing per stream, no later than receipt, after the engine's
+  time), and the driver processes everything due before the next input. The
+  log records these inputs (`inject`, `tick`, `control`, added after the
+  existing record kinds, so backtest logs and golden hashes are unchanged),
+  and `edbt log replay-strategy` feeds them back in the same order (FR-33).
+  Every input is later than everything processed before it, so the replay
+  reproduces the order exactly.
+- **2026-11-03 (M5) Session end.** A session ends with
+  `control("session_end")`: the kill switch's cancel-all and order block,
+  not counted as a kill-switch event in `summary.json`. With
+  `flatten_on_kill` the positions are closed too, so each daily session
+  starts flat. Testnet sessions also cancel the symbols' open orders (and
+  flatten, with `flatten_on_kill`) at the venue before starting, and sweep
+  any order the venue still lists after stopping. `live.end_on_kill` ends a
+  session after a kill once the venue confirms no open orders. `edbt live`
+  then exits 3 (restart is safe), or 4 after `max_loss` or `max_drawdown`
+  (do not restart).
+- **2026-11-03 (M5) Unknown order outcomes.** A new-order request with a
+  transport error may or may not have reached the venue (HTTP 503 "Unknown
+  error" is documented as unknown). The driver cancels it by client id and
+  reports it rejected (`TRANSPORT`); a later venue acceptance is ignored
+  because the order is already finished.
+- **2026-11-03 (M5) Venue reconciliation.** Positions from
+  `/fapi/v3/positionRisk` are compared with the ledger every
+  `live.reconcile_interval_s`. One mismatch can be a fill in flight, so a
+  violation is two consecutive checks with the same nonzero difference.
+- **2026-11-03 (M5) Clock offset and DQ-12.** The offset is the midpoint
+  estimate from the shortest of three back-to-back `/fapi/v1/time` calls
+  each minute (the first call can include a new TLS connection). From this
+  PC the round trip to the testnet is about 300 ms, so the bound on the
+  error of the offset (half the round trip) is about 150 ms, and the 5 ms
+  limit of DQ-12 flags every latency row. The measured offset itself is
+  about 3 ms, in line with the local clock being about 1 ms off. No
+  threshold is changed: the owner decides whether the uncertainty is the
+  round-trip bound (as now) or the NTP error bound of the local clock.
+- **2026-11-03 (M5) One process per gap-study symbol.** BTCUSDT and ETHUSDT
+  need different minimum sizes, and the `order_qty`, `max_inventory` and
+  skew of `mm_simple` are in base units. Two configs and two daily session
+  series, rather than a strategy change.
+- **2026-11-03 (M5) Unattended runs without sudo.** Installing a systemd
+  unit needs a password here, so `deploy/gap_supervisor.sh` runs from a
+  cron watchdog every 5 minutes with `flock` (the pattern the vol-surface
+  cron uses) and stops at a fixed end time. `deploy/edbt-gap@.service` is
+  the systemd alternative.
+- **2026-11-05 (M5) Supervisor retries failed starts.** During a Deribit
+  testnet maintenance halt (2026-11-04 about 18:09 UTC to 2026-11-05 11:28
+  UTC; instrument state `halted`, then `locked` and `settlement`) one BTC
+  session start got `11094 internal_server_error`, exited 1, and the
+  supervisor stopped that series for good. Exit 1 is now retried after 1,
+  2, ... 10 minutes, and only the tenth failure in a row stops the series;
+  exit 4 (loss limit) still stops it at once. During a halt each session
+  ends after `kill_stale_feed_ms` with no market data, and the supervisor
+  starts the next one (the time shows as downtime; no threshold changed).
+- **2026-11-05 (M5) Venue downtime is excluded from judged uptime (owner
+  decision of 2026-11-05).** A second testnet outage (feed stopped about
+  12:25 UTC; `public/auth` answered HTTP 502 from 12:26 to at least 13:11;
+  then `public/status` `locked: true` for every index) stopped both soak
+  series after ten failed starts. The owner ruled:
+  1. "Outage-tolerant, then rerun": the supervisor waits out venue outages
+     and logs them as venue downtime instead of counting them as failures,
+     then a fresh 24 h soak starts once both markets read open. Code change
+     only, no threshold change.
+  2. "Exclude it, report it": the uptime figure measures our system while
+     the venue is open. Venue-reported downtime is excluded and published
+     separately as its own figure. The 99% bar stays.
+
+  Venue downtime is defined strictly: only time the venue itself reports as
+  not open (an instrument `state` other than `open` in
+  `public/get_order_book`, `public/status` `locked: true` or our index in
+  `locked_indices`) or HTTP 5xx replies from the venue. Our process, our
+  network and the owner's ISP count against us; so do Deribit JSON-RPC
+  errors such as `11094 internal_server_error` that arrive without a 5xx
+  status, refused credentials, and the time between the start of an outage
+  and the supervisor's next check (up to `kill_stale_feed_ms` plus a
+  minute). `edbt venue-status` makes the check (exit 0 open, 5 venue down,
+  6 unknown). `deploy/gap_supervisor.sh` runs it before each session and
+  every minute while the venue is down, writes each interval to
+  `$DATA_ROOT/live/venue_downtime/<name>.csv`, and after an exit 1 counts
+  the failure toward the ten-in-a-row stop only if the venue reads open; a
+  venue it cannot reach (our network) is retried with the same backoff but
+  never stops the series. `python -m edbt.soak` (`just soak-report`)
+  reports both figures per series: uptime excluding venue downtime (judged
+  against 99%) and including it, with venue and our own downtime in
+  minutes. The same applies to the 21-day run.
+- **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
+  receive time, `N` the first unused index (a restart in the same hour adds
+  a file), so `list_partition_files` orders them like the shared capture's
+  files. Gap rows use the columns of the shared capture's `gaps` dataset,
+  so `scripts/compare_drops.py` can line up testnet drops with the
+  capture's Binance drops. `edbt-live` depends on `edbt-data` for the
+  canonical row types; it holds no strategy, order-manager or risk logic.
+- **2026-11-03 (M5) Latency measurement.** `edbt latency measure` uses the
+  REST channel only (the WebSocket API channel is not implemented):
+  post-only buys 5% below the best bid, sized at 1.05 times the minimum
+  notional, each cancelled at once, with feed latency from the depth and
+  trade streams during the run.
+- **2026-11-03 (M5) Venue changed to the Deribit testnet (owner ruling).**
+  Binance Futures Demo Trading is not available in the owner's region (the
+  Cayman Islands), which explains the `-2015` refusals of both Binance keys;
+  no VPN or proxy is allowed. The live venue is the D-02 fallback, the
+  Deribit testnet: host `test.deribit.com` only, for REST and WebSocket. The
+  host guard refuses `www.deribit.com`, `deribit.com` and every other
+  `*.deribit.com` host, as it refuses Binance mainnet. Credentials are read
+  only from `DERIBIT_TESTNET_CLIENT_ID` and `DERIBIT_TESTNET_CLIENT_SECRET`.
+  D-06 now names BTC and ETH perpetuals on Deribit instead of BTCUSDT and
+  ETHUSDT, with mm_simple at minimum size, 7 calibration days and 14
+  evaluation days. The Binance adapter stays in the code (`live.api =
+  "binance_usdm"`), unused.
+- **2026-11-03 (M5) Deribit facts.** From the Deribit API docs read
+  2026-11-03 (JSON-RPC reference, OpenAPI and AsyncAPI specs):
+  - REST is `https://test.deribit.com/api/v2/<method>`, WebSocket
+    `wss://test.deribit.com/ws/api/v2`.
+  - Auth is `public/auth` with `client_credentials`, giving an access token
+    and a refresh token (each refresh replaces the pair); REST private calls
+    carry `Authorization: Bearer`, and a WebSocket auth authenticates that
+    connection.
+  - `book.<i>.100ms` sends the full book first after each subscription,
+    then changes `[action, price, amount]` with `change_id` and
+    `prev_change_id`; on a gap the docs advise re-subscribing.
+  - `trades.<i>.100ms` and `quote.<i>` are public; `user.orders.<i>.raw`
+    and `user.trades.<i>.raw` are private.
+  - `public/set_heartbeat` makes the server send `test_request`, which must
+    be answered with `public/test` or the connection is closed.
+  - A post-only order that would take is repriced by default and rejected
+    with `11054` (`post_only_reject`) when `reject_post_only` is set.
+  - `private/cancel_by_label` returns the number of orders cancelled.
+  - `public/get_instrument` gives tick size, minimum amount, contract size,
+    maker and taker commission, and `instrument_type` (`linear` or
+    `reversed`).
+- **2026-11-03 (M5) What carries over and what is venue-specific.** The
+  session driver, live source, depth sync, recorder, replay, risk path, kill
+  confirmation and reconciliation are shared. Deribit needs its own:
+  - streams: JSON-RPC subscriptions over one WebSocket, heartbeats;
+  - book sync: the stream's own full book instead of a REST snapshot, and a
+    re-subscription after a `change_id` gap (`first = prev_change_id`, so
+    the shared bridging rule applies);
+  - REST auth: an OAuth token with refresh instead of HMAC signing;
+  - order formatting: `private/buy` and `private/sell` with
+    `post_only=true&reject_post_only=true` for GTX, so a would-be taker is
+    rejected (expired as `POST_ONLY_WOULD_CROSS`) rather than repriced as
+    the venue does by default; cancel by label;
+  - the translator: orders by label, fills from user trades, deduplicated by
+    trade id;
+  - start and end sweeps, and the instrument pull.
+  Units differ by instrument:
+  - tick size and minimum amount (the amount step) come from
+    `public/get_instrument`;
+  - amounts are in USD for inverse contracts (contract size 10 USD for
+    BTC-PERPETUAL) and in the base coin for linear USDC perpetuals.
+  Fees are the instrument's commissions (testnet commissions cannot be set
+  by the account); each fill's fee is taken from the venue's trade record.
+- **2026-11-03 (M5) Linear USDC perpetuals (owner decision).**
+  BTC-PERPETUAL and ETH-PERPETUAL are inverse: amounts in USD; P&L, margin
+  and fees in BTC or ETH. The ledger, the simulator's fees and the risk
+  notional are linear. The owner chose the linear perpetuals
+  BTC_USDC-PERPETUAL and ETH_USDC-PERPETUAL ("Yes, use USDC"), so the
+  accounting is unchanged; `edbt-ingest instruments` still refuses to write
+  an inverse instrument.
+  A public read from test.deribit.com at about 23:40 UTC on 2026-11-03
+  (reported by the review session) found:
+  - BTC_USDC-PERPETUAL: 100 trades in about 10 minutes, about $1.8B of
+    24-hour volume.
+  - ETH_USDC-PERPETUAL: 100 trades in about 2.3 hours, about $19M of 24-hour
+    volume.
+  ETH may give few fills. Fills are reported per symbol (`status.json`,
+  `live.json`). If ETH falls short of AC-H-01's fill count, that is reported
+  as a finding; symbols are not swapped mid-run.
+- **2026-11-03 (M5) Deribit order events.**
+  - A user-stream trade can arrive before the REST reply that tells the
+    order's size; such fills are held until the size is known (from the
+    reply or the order event), so leaves are never computed against an
+    unknown size.
+  - A confirmed cancel by label does not end the order by itself. The order
+    event that follows carries the venue's filled amount, and the order ends
+    only once every fill up to that amount has arrived. If the order event
+    never comes (user stream down), the order ends 2 s after the confirmed
+    cancel; a held end whose fills never arrive is released after 5 s.
+  - Without this, a fill made just before a cancel was dropped, and the
+    venue position drifted from the ledger; the mock test caught it.
+- **2026-11-03 (M5) Deribit mock.** `edbt_live::mock_deribit` speaks the
+  same REST methods and JSON-RPC WebSocket on loopback, with the synthetic
+  book model of the Binance mock. It checks the mock client credentials and
+  bearer token, sends a full book after each subscription, can skip change
+  ids and drop connections, and sends `test_request` heartbeats.
+  `edbt mock-venue --proto deribit` runs it for the Python tests.

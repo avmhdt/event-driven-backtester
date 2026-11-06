@@ -1,6 +1,6 @@
-"""Unsigned reachability check of the Binance USD-M futures testnet (P-09, D-01).
+"""Unsigned reachability check of the configured testnet (P-09, D-01).
 
-Sends ``GET <rest_url>/fapi/v1/time`` (no keys, no signature) to each REST
+Sends the venue's time request (no keys, no signature) to each REST
 base URL listed in ``configs/live_testnet.toml`` and appends one row per URL
 to ``results/testnet_ping.csv``. URLs whose host is not on
 ``live.allowed_hosts``, or that name a mainnet host, are refused before any
@@ -35,8 +35,10 @@ MAINNET = {
 def is_mainnet(host: str) -> bool:
     """Mirror of the Rust guard's mainnet rule."""
     h = host.lower().rstrip(".")
-    if h in MAINNET or h == "binance.com":
+    if h in MAINNET or h in ("binance.com", "deribit.com"):
         return True
+    if h.endswith(".deribit.com"):
+        return h != "test.deribit.com"
     return h.endswith(".binance.com") and not h.removesuffix(".binance.com").startswith("demo-")
 
 
@@ -54,13 +56,15 @@ def main(config: str = "configs/live_testnet.toml", out: str = "results/testnet_
         if is_mainnet(host) or host not in allowed or urlparse(base).scheme != "https":
             print(f"refused: {base}", file=sys.stderr)
             return 2
-        url = base.rstrip("/") + "/fapi/v1/time"
+        deribit = live.get("api") == "deribit"
+        url = base.rstrip("/") + ("/api/v2/public/get_time" if deribit else "/fapi/v1/time")
         t0 = time.perf_counter()
         status, server_ms, note = "", "", ""
         try:
             with urllib.request.urlopen(url, timeout=10) as resp:
                 status = str(resp.status)
-                server_ms = str(json.loads(resp.read())["serverTime"])
+                body = json.loads(resp.read())
+                server_ms = str(body["result"] if deribit else body["serverTime"])
         except urllib.error.HTTPError as e:
             status, note = str(e.code), e.reason
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as e:

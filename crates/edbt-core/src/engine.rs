@@ -286,6 +286,19 @@ pub fn market_rec(ev: &MarketEvent) -> MarketRec {
     r
 }
 
+/// Rebuild an L2 or trade event from its log record (live replay, FR-33);
+/// `None` for L3 records.
+#[must_use]
+pub fn market_event(r: &MarketRec) -> Option<MarketEvent> {
+    let side = if r.side < 0 { Side::Sell } else { Side::Buy };
+    let kind = match r.kind {
+        0 => MarketKind::L2 { side, price: r.price, qty: r.qty, seq: r.id as i64, flags: u8::try_from(r.aux).ok()? },
+        1 => MarketKind::Trade { side: r.side, price: r.price, qty: r.qty, trade_id: r.id },
+        _ => return None,
+    };
+    Some(MarketEvent { ts_exchange: r.ts_exchange, ts_recv: r.ts_recv, symbol: SymbolId(r.symbol), kind })
+}
+
 #[derive(Debug, Default)]
 struct Timers {
     next: u64,
@@ -747,6 +760,7 @@ pub struct Engine<S, G, C> {
     violations: u64,
     last_event: LastEvent,
     kill_fired: bool,
+    ending: bool,
 }
 
 impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
@@ -821,13 +835,14 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             violations: 0,
             last_event: LastEvent::None,
             kill_fired: false,
+            ending: false,
         })
     }
 
     fn peek_source(&mut self) -> Result<Option<Key>, EngineError> {
         if self.peeked.is_none() && !self.source_done {
             match self.source.next_event() {
-                None => self.source_done = true,
+                None => self.source_done = !self.source.pending(),
                 Some(Err(e)) => return Err(e.into()),
                 Some(Ok(ev)) => {
                     let seq = self.core.sched.next_seq();
@@ -876,6 +891,10 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             return Ok(StepStatus::Finished);
         }
         let Some(key) = self.peek()? else {
+            if !self.source_done {
+                // A live source with nothing buffered: nothing to do yet.
+                return Ok(StepStatus::Running);
+            }
             self.finish(strategy)?;
             return Ok(StepStatus::Finished);
         };
@@ -927,7 +946,9 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             return Err(EngineError::Strategy(e));
         }
         self.n_events += 1;
-        self.kill_fired |= self.core.risk.kill.killed();
+        // After `session_end` the switch is engaged to block orders; that
+        // is not a kill-switch event.
+        self.kill_fired |= self.core.risk.kill.killed() && !self.ending;
         self.reconcile(key.ts)?;
         Ok(StepStatus::Running)
     }
@@ -1175,6 +1196,171 @@ impl<S: EventSource, G: Gateway, C: Clock> Engine<S, G, C> {
             return Err(EngineError::Strategy(e));
         }
         Ok(())
+    }
+
+    /// Live: the earliest time the engine may move to without reordering
+    /// anything it has already processed (strictly after `now`).
+    #[must_use]
+    pub fn live_floor(&self, wall: Nanos) -> Nanos {
+        wall.max(self.core.now.saturating_add(1))
+    }
+
+    /// Live: schedule a venue response at local time `ts` (raised to
+    /// [`Engine::live_floor`]) and log it for replay. Returns the time used.
+    ///
+    /// # Errors
+    /// Event-log errors.
+    pub fn inject_response(&mut self, r: ExchangeResponse, ts: Nanos) -> Result<Nanos, EngineError> {
+        let t = self.live_floor(ts);
+        let (now, rank) = (self.core.now, self.core.rank);
+        self.core.now = t;
+        self.core.rank = Rank::LocalResponse as u8;
+        let logged = self.core.log(Payload::Inject(r.to_rec()));
+        self.core.now = now;
+        self.core.rank = rank;
+        logged?;
+        self.core.sched.schedule(t, Rank::LocalResponse, Scheduled::Response(r));
+        Ok(t)
+    }
+
+    fn advance_to(&mut self, ts: Nanos, strategy: &mut dyn Strategy) -> Result<Nanos, EngineError> {
+        let t = self.live_floor(ts);
+        self.clock.advance(t);
+        self.core.sched.set_now(t);
+        self.core.now = t;
+        self.core.rank = Rank::Timer as u8;
+        if !self.started {
+            self.begin(strategy, t)?;
+        }
+        if t >= self.next_mark {
+            self.periodic_rows(t)?;
+        }
+        Ok(t)
+    }
+
+    fn after_live_action(&mut self, t: Nanos, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        self.flush_risk_events(strategy);
+        if let Some(e) = self.core.error.take() {
+            return Err(e);
+        }
+        if let Some(e) = strategy.take_error() {
+            return Err(EngineError::Strategy(e));
+        }
+        // After `session_end` the switch is engaged to block orders; that
+        // is not a kill-switch event.
+        self.kill_fired |= self.core.risk.kill.killed() && !self.ending;
+        self.reconcile(t)
+    }
+
+    /// Live: move the engine to wall time `ts` with no event (stale-feed
+    /// check, periodic ledger rows). Every event already processed is
+    /// earlier and every pending one later, so replaying the logged ticks
+    /// in order reproduces the session. Returns the time used.
+    ///
+    /// # Errors
+    /// Log, reconciliation or strategy errors.
+    pub fn tick(&mut self, ts: Nanos, strategy: &mut dyn Strategy) -> Result<Nanos, EngineError> {
+        if self.finished {
+            return Ok(self.core.now);
+        }
+        let t = self.advance_to(ts, strategy)?;
+        self.core.log(Payload::Tick)?;
+        if let Some(k) = self.core.risk.kill.check_stale(t) {
+            self.core.kill_actions(&k)?;
+        }
+        self.after_live_action(t, strategy)?;
+        Ok(t)
+    }
+
+    /// Live: an operator command at wall time `ts`: `kill:<reason>`,
+    /// `reset`, or `session_end` (cancel everything and block new orders
+    /// before the session stops; not counted as a kill-switch event). Logged
+    /// so the session replays.
+    ///
+    /// # Errors
+    /// Log, reconciliation or strategy errors.
+    pub fn control(&mut self, cmd: &str, ts: Nanos, strategy: &mut dyn Strategy) -> Result<Nanos, EngineError> {
+        if self.finished {
+            return Ok(self.core.now);
+        }
+        let t = self.advance_to(ts, strategy)?;
+        self.core.log(Payload::Control { cmd: cmd.to_owned() })?;
+        let fired_before = self.kill_fired;
+        if cmd == "session_end" {
+            self.ending = true;
+        }
+        if cmd == "reset" {
+            self.reset_kill_switch(strategy)?;
+        } else {
+            let reason = cmd.strip_prefix("kill:").unwrap_or(cmd);
+            self.kill_switch(reason, strategy)?;
+        }
+        self.after_live_action(t, strategy)?;
+        if cmd == "session_end" {
+            // Ending a session cancels everything and blocks new orders the
+            // way a kill does, but it is not a kill-switch event.
+            self.kill_fired = fired_before;
+        }
+        Ok(t)
+    }
+
+    /// Live: end the session at wall time `ts` (`on_stop`, final rows).
+    ///
+    /// # Errors
+    /// Log or strategy errors.
+    pub fn stop(&mut self, ts: Nanos, strategy: &mut dyn Strategy) -> Result<(), EngineError> {
+        if self.finished {
+            return Ok(());
+        }
+        self.advance_to(ts, strategy)?;
+        self.finish(strategy)
+    }
+
+    /// The gateway, mutably (live drivers read its counters).
+    pub fn gateway_mut(&mut self) -> &mut G {
+        &mut self.core.gateway
+    }
+
+    /// The event source (live drivers push into it).
+    pub fn source_mut(&mut self) -> &mut S {
+        &mut self.source
+    }
+
+    /// The engine's current time.
+    #[must_use]
+    pub fn engine_now(&self) -> Nanos {
+        self.core.now
+    }
+
+    /// Symbol index of an order known to the order manager.
+    #[must_use]
+    pub fn order_symbol(&self, id: ClientOrderId) -> Option<usize> {
+        self.core.oms.order(id).map(|o| o.symbol.0 as usize)
+    }
+
+    /// Open orders known to the order manager.
+    #[must_use]
+    pub fn open_order_count(&self) -> usize {
+        self.core.oms.open_orders(None).len()
+    }
+
+    /// Ledger position of symbol `sym`, lots.
+    #[must_use]
+    pub fn position_lots(&self, sym: usize) -> Lots {
+        self.core.ledger.position(sym).map_or(0, |p| p.position)
+    }
+
+    /// Is the kill switch engaged?
+    #[must_use]
+    pub fn killed(&self) -> bool {
+        self.core.risk.kill.killed()
+    }
+
+    /// The rule that engaged the kill switch (`manual`, `max_loss`,
+    /// `max_drawdown`, `stale_feed`, `reject_burst`).
+    #[must_use]
+    pub fn kill_rule(&self) -> Option<&'static str> {
+        self.core.risk.kill.reason().map(KillReason::rule)
     }
 
     /// Run to the end.

@@ -12,9 +12,12 @@ __all__ = [
     "Context",
     "__version__",
     "cli_main",
+    "pull_instruments",
     "read_events",
+    "replay_strategy",
     "resolve_config",
     "run_backtest",
+    "run_live",
 ]
 
 __version__: str
@@ -30,6 +33,22 @@ def run_backtest(
     log_experiment: bool = True,
 ) -> dict[str, str]:
     """Run a whole backtest; returns ``run_id``, ``out_dir`` and ``run_hash``."""
+
+def run_live(
+    config_json: str,
+    strategy: object | None,
+    params: object,
+    duration_s: float | None = None,
+    confirm_testnet: bool = False,
+    log_experiment: bool = True,
+) -> dict[str, str]:
+    """Run a paper or testnet session; returns ``run_id``, ``out_dir`` and ``run_hash``."""
+
+def pull_instruments(config_json: str) -> list[dict[str, Any]]:
+    """Pull tick, lot, minimum notional and commission rates from the venue in ``[live]``."""
+
+def replay_strategy(run_dir: str, strategy: object, params: object) -> dict[str, Any]:
+    """Feed a live session's logged inputs back through ``strategy`` (FR-33)."""
 
 def resolve_config(config_json: str) -> tuple[str, str, str]:
     """Resolve a JSON config: (resolved TOML, resolved JSON, config hash)."""

@@ -128,6 +128,13 @@ pub trait EventSource {
     fn stats(&self) -> SourceStats {
         SourceStats::default()
     }
+
+    /// A live source with nothing buffered right now returns `None` from
+    /// [`EventSource::next_event`] but is not finished. The engine then
+    /// keeps running on its scheduled events instead of ending the run.
+    fn pending(&self) -> bool {
+        false
+    }
 }
 
 /// A source over an in-memory vector (tests, benchmarks with pre-decoded events).

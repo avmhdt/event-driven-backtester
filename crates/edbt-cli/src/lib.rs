@@ -6,6 +6,7 @@
 pub mod bench;
 pub mod cli;
 pub mod data_cmd;
+pub mod live;
 pub mod log_cmd;
 pub mod output;
 pub mod runner;

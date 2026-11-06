@@ -27,6 +27,9 @@ pub const MAINNET_HOSTS: &[&str] = &[
     "fstream-auth.binance.com",
     "papi.binance.com",
     "eapi.binance.com",
+    "www.deribit.com",
+    "deribit.com",
+    "history.deribit.com",
 ];
 
 /// Refusal by the host guard. The Python binding maps it to
@@ -50,9 +53,9 @@ pub enum LiveGuardError {
     BadEntry(String),
 }
 
-/// Is `host` a Binance mainnet host? Known mainnet names are refused, and so
-/// is any other `*.binance.com` name except the documented `demo-*` testnet
-/// family.
+/// Is `host` a mainnet host? Known mainnet names are refused, and so is any
+/// other `*.binance.com` name except the documented `demo-*` testnet family,
+/// and any `*.deribit.com` name except `test.deribit.com`.
 #[must_use]
 pub fn is_mainnet_host(host: &str) -> bool {
     let h = host.trim_end_matches('.').to_ascii_lowercase();
@@ -62,10 +65,17 @@ pub fn is_mainnet_host(host: &str) -> bool {
     if h == "binance.com" {
         return true;
     }
-    match h.strip_suffix(".binance.com") {
-        Some(sub) => !sub.starts_with("demo-"),
-        None => false,
+    if let Some(sub) = h.strip_suffix(".binance.com") {
+        return !sub.starts_with("demo-");
     }
+    // Deribit: only the testnet host is allowed.
+    h.ends_with(".deribit.com") && h != "test.deribit.com"
+}
+
+/// Loopback host names (the local mock venue).
+#[must_use]
+pub fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 
 /// The allowlist of testnet hosts.
@@ -102,12 +112,15 @@ impl HostGuard {
     /// Any [`LiveGuardError`] variant except `BadEntry`.
     pub fn check_url(&self, url: &str) -> Result<Url, LiveGuardError> {
         let parsed = Url::parse(url).map_err(|_| LiveGuardError::BadUrl(url.to_owned()))?;
-        if !matches!(parsed.scheme(), "https" | "wss") {
-            return Err(LiveGuardError::BadScheme(parsed.scheme().to_owned()));
-        }
         let host = parsed.host_str().ok_or_else(|| LiveGuardError::BadUrl(url.to_owned()))?.to_ascii_lowercase();
         if is_mainnet_host(&host) {
             return Err(LiveGuardError::Mainnet(host));
+        }
+        // Plain http/ws only for an allowlisted loopback address: the local
+        // mock venue used by tests and `just demo-modes`.
+        let plain_ok = matches!(parsed.scheme(), "http" | "ws") && is_loopback(&host);
+        if !matches!(parsed.scheme(), "https" | "wss") && !plain_ok {
+            return Err(LiveGuardError::BadScheme(parsed.scheme().to_owned()));
         }
         if !self.allowed.contains(&host) {
             return Err(LiveGuardError::NotAllowed(host));
@@ -156,7 +169,13 @@ pub const ENV_API_KEY: &str = "BINANCE_TESTNET_API_KEY";
 /// Environment variable holding the testnet API secret.
 pub const ENV_API_SECRET: &str = "BINANCE_TESTNET_API_SECRET";
 
-/// Testnet API credentials. Only ever read from `BINANCE_TESTNET_*`.
+/// Environment variable holding the Deribit testnet client id.
+pub const ENV_DERIBIT_ID: &str = "DERIBIT_TESTNET_CLIENT_ID";
+/// Environment variable holding the Deribit testnet client secret.
+pub const ENV_DERIBIT_SECRET: &str = "DERIBIT_TESTNET_CLIENT_SECRET";
+
+/// Testnet API credentials. Only ever read from `BINANCE_TESTNET_*` or
+/// `DERIBIT_TESTNET_*`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     /// Public API key.
@@ -185,5 +204,19 @@ impl Credentials {
     #[must_use]
     pub fn from_env() -> Option<Self> {
         Self::from_lookup(|k| std::env::var(k).ok())
+    }
+
+    /// Deribit testnet credentials through `get`, which is only ever asked
+    /// for the two `DERIBIT_TESTNET_*` names (client id in `api_key`).
+    pub fn deribit_from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let id = get(ENV_DERIBIT_ID).filter(|v| !v.trim().is_empty())?;
+        let secret = get(ENV_DERIBIT_SECRET).filter(|v| !v.trim().is_empty())?;
+        Some(Self { api_key: id.trim().to_owned(), secret: Secret::new(secret.trim().to_owned()) })
+    }
+
+    /// Deribit testnet credentials from the process environment.
+    #[must_use]
+    pub fn deribit_from_env() -> Option<Self> {
+        Self::deribit_from_lookup(|k| std::env::var(k).ok())
     }
 }

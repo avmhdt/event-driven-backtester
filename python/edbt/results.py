@@ -205,15 +205,26 @@ def run_live(
     duration_s: float | None = None,
     confirm_testnet: bool = False,
 ) -> BacktestResult:
-    """Run a paper or testnet session (the live adapter arrives in M5)."""
-    cfg, _ = _with_strategy(_as_config(config), strategy)
+    """Run a paper or testnet session with the same strategy as in a backtest.
+
+    Paper mode trades against the simulated exchange on live testnet market
+    data; testnet mode sends orders to the venue's testnet (Binance USD-M
+    futures or Deribit; keys from ``BINANCE_TESTNET_*`` or
+    ``DERIBIT_TESTNET_*`` only). The session ends after
+    ``duration_s`` seconds; its directory holds the usual run files plus
+    ``status.json``, ``live.json``, ``drops.csv`` and, in testnet mode,
+    ``order_latency.parquet``.
+    """
+    cfg, obj = _with_strategy(_as_config(config), strategy)
     if cfg.mode == Mode.BACKTEST:
         raise EdbtError("run_live needs run.mode = paper or testnet; use run_backtest")
     if cfg.mode == Mode.TESTNET and not confirm_testnet:
         raise EdbtError("testnet sessions need confirm_testnet=True")
     if duration_s is not None and duration_s <= 0:
         raise EdbtError("duration_s must be positive")
-    raise EdbtError("live sessions arrive with the Binance testnet adapter (M5)")
+    params = cfg.to_dict()["strategy"].get("params", {})
+    r = _edbt.run_live(json.dumps(cfg.to_dict()), obj, params, duration_s, confirm_testnet, True)
+    return load_result(r["out_dir"])
 
 
 class Backtest:

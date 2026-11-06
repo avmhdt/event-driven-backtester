@@ -1,0 +1,88 @@
+# Deribit testnet (D-02 fallback venue, owner ruling 2026-11-03: Binance
+# Futures Demo Trading is not available in the owner's region). Only
+# test.deribit.com is allowed; every other *.deribit.com host is refused by
+# the host guard. Credentials come only from DERIBIT_TESTNET_CLIENT_ID and
+# DERIBIT_TESTNET_CLIENT_SECRET. Instruments: the linear USDC perpetuals
+# (owner decision; docs/decisions.md).
+#
+# Gap study, ETH series (see gap_study_testnet.toml).
+#
+#   edbt live --config configs/gap_study_testnet_eth.toml --duration 24h --record --i-understand-testnet-only
+[run]
+name = "gap_study_eth"
+mode = "testnet"
+seed = 20261103
+event_log = "full"
+
+[data]
+venue = "deribit-testnet"
+symbols = ["ETH_USDC-PERPETUAL"]
+book = "book_l2"
+trades = true
+instruments = "configs/instruments.toml"
+
+# Used only in paper mode (testnet fills come from the venue).
+[latency.feed]
+model = "recorded"
+[latency.order]
+model = "constant"
+entry_ns = 10_000_000     # placeholder until `edbt latency fit` on testnet rows
+response_ns = 10_000_000
+
+[queue]
+model = "prob_power"
+power = 2.0
+
+[fees]
+source = "instruments"
+
+[risk]
+max_position_lots = 100
+max_open_orders = 10
+max_order_qty_lots = 10
+max_order_notional = 1000.0
+max_orders_per_sec = 5
+max_cancels_per_sec = 10
+price_band_bps = 50.0
+kill_max_loss = 200.0
+kill_max_drawdown = 200.0
+kill_stale_feed_ms = 30_000
+kill_reject_burst = 50     # post-only rejects do not count (docs/decisions.md)
+flatten_on_kill = true
+
+[ledger]
+initial_cash = 10000.0
+quote_currency = "USDC"
+
+[strategy]
+kind = "python"
+path = "strategies/mm_simple.py"
+class = "MarketMaker"
+[strategy.params]
+# Minimum size: the instrument's minimum amount, 0.0001 (public
+# get_instrument, 2026-11-04); skew about 1 tick per order of inventory.
+half_spread_ticks = 1
+order_qty = 0.0001
+max_inventory = 0.001
+skew_ticks_per_unit = 10000.0
+refresh_ns = 500_000_000
+
+[live]
+api = "deribit"
+venue = "deribit-testnet"
+rest_url = "https://test.deribit.com"
+ws_market_url = "wss://test.deribit.com/ws/api/v2"
+allowed_hosts = ["test.deribit.com"]
+order_channel = "rest"
+record = true
+record_dir = "data"        # $DATA_ROOT; canonical partitions under venue=deribit-testnet
+clock_sync_interval_s = 60
+session_dir = "~/data/event-driven-backtester/live/sessions"
+status_interval_s = 10
+reconcile_interval_s = 60
+tick_interval_ms = 1000
+min_free_gb = 5.0
+disk_warn_pct = 80.0
+max_conn_age_h = 23.0
+stale_after_s = 30
+end_on_kill = true

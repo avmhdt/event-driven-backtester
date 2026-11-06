@@ -256,7 +256,7 @@ def test_run_live_guards(fixture_config: Config) -> None:
         run_live("noop", fixture_config.with_overrides({"run.mode": "testnet"}))
     with pytest.raises(EdbtError, match="positive"):
         run_live("noop", fixture_config.with_overrides({"run.mode": "paper"}), duration_s=0)
-    with pytest.raises(EdbtError, match="M5"):
+    with pytest.raises(EdbtError, match=r"\[live\] is required"):
         run_live("noop", fixture_config.with_overrides({"run.mode": "testnet"}), confirm_testnet=True)
 
 

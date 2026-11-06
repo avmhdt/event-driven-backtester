@@ -8,6 +8,7 @@
 pub mod adapter;
 pub mod backtest;
 pub mod context;
+pub mod live;
 pub mod types;
 
 use pyo3::prelude::*;
@@ -27,6 +28,9 @@ fn _edbt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(backtest::run_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(backtest::resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(backtest::read_events, m)?)?;
+    m.add_function(wrap_pyfunction!(live::run_live, m)?)?;
+    m.add_function(wrap_pyfunction!(live::replay_strategy, m)?)?;
+    m.add_function(wrap_pyfunction!(live::pull_instruments, m)?)?;
     m.add_class::<context::PyContext>()?;
     m.add_class::<context::PyBookView>()?;
     m.add_class::<backtest::PyBacktest>()?;

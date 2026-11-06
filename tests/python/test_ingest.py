@@ -78,7 +78,7 @@ def test_recordings_needs_a_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize("cmd", ["tardis", "lobster", "instruments", "hftbt-export"])
+@pytest.mark.parametrize("cmd", ["tardis", "lobster", "hftbt-export"])
 def test_later_commands_say_not_yet(cmd: str) -> None:
     result = runner.invoke(app, [cmd])
     assert result.exit_code == 2

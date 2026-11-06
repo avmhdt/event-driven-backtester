@@ -96,3 +96,36 @@ fn credentials_only_from_testnet_variables() {
     let none = Credentials::from_lookup(|_| None);
     assert!(none.is_none());
 }
+
+#[test]
+fn plain_schemes_only_for_an_allowlisted_loopback_mock() {
+    let guard = HostGuard::new(&["127.0.0.1", "demo-fapi.binance.com"]).unwrap();
+    assert!(guard.check_url("http://127.0.0.1:8080/fapi/v1/time").is_ok());
+    assert!(guard.check_url("ws://127.0.0.1:9000/public/stream").is_ok());
+    assert!(matches!(guard.check_url("http://demo-fapi.binance.com/"), Err(LiveGuardError::BadScheme(_))));
+    assert!(matches!(guard.check_url("http://localhost:8080/"), Err(LiveGuardError::NotAllowed(_))));
+    assert!(matches!(guard.check_url("ws://fstream.binance.com/ws"), Err(LiveGuardError::Mainnet(_))));
+}
+
+#[test]
+fn deribit_mainnet_is_refused_and_only_the_testnet_host_allowed() {
+    for h in ["www.deribit.com", "deribit.com", "history.deribit.com", "streams.deribit.com", "WWW.DERIBIT.COM."] {
+        assert!(is_mainnet_host(h), "{h}");
+        assert!(
+            matches!(HostGuard::new(&[h]), Err(LiveGuardError::Mainnet(_)) | Err(LiveGuardError::BadEntry(_))),
+            "{h}"
+        );
+    }
+    assert!(!is_mainnet_host("test.deribit.com"));
+    let guard = HostGuard::new(&["test.deribit.com"]).unwrap();
+    assert!(guard.check_url("wss://test.deribit.com/ws/api/v2").is_ok());
+    assert!(matches!(guard.check_url("wss://www.deribit.com/ws/api/v2"), Err(LiveGuardError::Mainnet(_))));
+    assert!(matches!(guard.check_url("https://deribit.com/api/v2/public/get_time"), Err(LiveGuardError::Mainnet(_))));
+    let creds = edbt_live::guard::Credentials::deribit_from_lookup(|k| match k {
+        "DERIBIT_TESTNET_CLIENT_ID" => Some("id".to_owned()),
+        "DERIBIT_TESTNET_CLIENT_SECRET" => Some("very-secret-value".to_owned()),
+        _ => panic!("asked for {k}"),
+    })
+    .unwrap();
+    assert!(!format!("{creds:?}").contains("very-secret-value"));
+}

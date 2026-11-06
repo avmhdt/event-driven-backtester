@@ -16,7 +16,7 @@ in every mode.
 | `edbt-data` | Canonical Parquet readers and writers, `ReplaySource`, instruments, validation, synthetic data | core, book |
 | `edbt-exchange` | `SimGateway`: exchange-time books, latency, matching, queue models, fees | core, book |
 | `edbt-strategies` | Rust reference strategies and their registry | core |
-| `edbt-live` | Binance USD-M testnet adapter, host guard, recorder | core |
+| `edbt-live` | Binance USD-M testnet adapter, live session driver, host guard, recorder, latency measurement, mock venue | core, data |
 | `edbt-cli` | `edbt` binary and the run wiring shared with Python | all of the above |
 | `edbt-py` | PyO3 module `edbt._edbt` | cli |
 
@@ -57,6 +57,19 @@ after the entry latency (rank 1), matches it there, and schedules responses
 back at local time (rank 2). The order manager applies a fill to the ledger,
 then calls `on_fill`, then `on_order_update`. See `fill_rules.md`,
 `queue_models.md` and `latency_models.md`.
+
+## Live sessions
+
+`edbt live` runs the same engine on a `LiveSource` and the wall clock.
+Paper mode keeps `SimGateway`; testnet mode swaps in `LiveGateway`, which
+queues risk-checked requests to one REST worker per symbol. I/O threads
+(market streams, user stream, order workers, housekeeping, recorder) send
+everything to the session driver on one channel; the driver owns the
+engine. It pushes one venue message at a time, injects venue responses,
+ticks the engine when idle, and applies operator commands, each at a time
+after everything already processed, and the event log records all of them,
+so `edbt log replay-strategy` reproduces every order intent of a session
+(FR-33). See `live_runbook.md` and `docs/decisions.md` (M5).
 
 ## Run directory
 

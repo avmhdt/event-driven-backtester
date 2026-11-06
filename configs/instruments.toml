@@ -69,3 +69,27 @@ maker_bps = 2.0
 taker_bps = 5.0
 effective_from = "2026-11-01"
 source = "crypto-lob-alpha config/instruments.yaml: fapi/v1/exchangeInfo; binance.com/en/fee/futureFee, read 2026-11-01"
+
+# Pulled by `edbt-ingest instruments --venue deribit-testnet` on 2026-11-04.
+[[instrument]]
+venue = "deribit-testnet"
+symbol = "BTC_USDC-PERPETUAL"
+tick_size = 0.1
+lot_size = 0.0001
+contract_type = "linear_perp"
+maker_bps = 0.0
+taker_bps = 5.0
+effective_from = "2026-11-04"
+source = "GET /api/v2/public/get_instrument on test.deribit.com, read 2026-11-04"
+
+# Pulled by `edbt-ingest instruments --venue deribit-testnet` on 2026-11-04.
+[[instrument]]
+venue = "deribit-testnet"
+symbol = "ETH_USDC-PERPETUAL"
+tick_size = 0.01
+lot_size = 0.0001
+contract_type = "linear_perp"
+maker_bps = 0.0
+taker_bps = 5.0
+effective_from = "2026-11-04"
+source = "GET /api/v2/public/get_instrument on test.deribit.com, read 2026-11-04"
