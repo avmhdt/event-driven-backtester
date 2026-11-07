@@ -410,6 +410,49 @@ release of each crate that still builds on Rust 1.85.
   reports both figures per series: uptime excluding venue downtime (judged
   against 99%) and including it, with venue and our own downtime in
   minutes. The same applies to the 21-day run.
+- **2026-11-07 (M5) The 21-day run is judged against 95%.** NFR-11 sets
+  gap-study uptime at 95% of the window and AC-H-01 repeats it; the 99% bar
+  belongs only to the M5 24 h soak exit. The owner's venue-downtime ruling
+  of 2026-11-05 applies to both. `just gap-report` uses `--bar 0.95`;
+  `just soak-report` keeps 0.99.
+- **2026-11-07 (M5) Sweep closes count in P&L and fees (owner decision of
+  2026-11-07, "Ledger fix only").** A session that ends while the venue or
+  our network is down cannot flatten (its flatten order cannot reach the
+  venue), so the position stays open at the venue until the next start
+  sweep, or a shutdown sweep, closes it with a reduce-only market order
+  labelled `edbt-sweep`. Those fills were in no session's ledger. Each
+  sweep now keeps its venue fills; the session writes them to
+  `sweep_fills.parquet` and adds `carryover_pnl`, `carryover_fees`,
+  `carryover_trades` and `carryover_unpriced` to `live.json`. A fill is
+  priced against the last ledger mark of the session that left the
+  position (the previous session of that symbol for a start sweep, the
+  session itself for a shutdown sweep): `signed qty x (price - mark) - fee`,
+  signed positive when the sweep sold. That session's `pnl_total` already
+  holds the unrealized P&L up to its mark, so session P&L plus carryover is
+  the account's P&L. A fill with no earlier session is kept and counted as
+  unpriced. The engine, ledger and FR-33 replay are unchanged.
+  `edbt sweep-backfill --config <file> --since <utc> [--write]` reads the
+  venue's trade history (`private/get_user_trades_by_instrument_and_time`,
+  read-only), assigns each `edbt-sweep` fill to the session that started
+  within 3 minutes after it (start sweep) or ended within 3 minutes before
+  it (shutdown sweep), and writes the same files for finished sessions that
+  lack them. Binance replies carry no commission, so Binance sweep fees are
+  marked unknown. The strategy is unchanged.
+- **2026-11-07 (M5) Gap-study finding: inventory pinned at the cap.**
+  `mm_simple` with `skew_ticks_per_unit = 10000` shifts both quotes by one
+  tick per lot of inventory (0.0001). The testnet BTC_USDC and ETH_USDC
+  spreads are one tick, so with any inventory the quote that would reduce
+  it lands on the opposite touch and the venue rejects it as post-only
+  (`POST_ONLY_WOULD_CROSS`), while the quote that would add to it stops at
+  `max_inventory` (10 lots). |position| sat at 10 lots 92% of the time in
+  the soak and 99% early in the 21-day run, and 97-99% of rejects were on
+  the reducing side. Fills therefore come only when the market trades
+  through our quote, so the fill rate follows venue activity: BTC_USDC
+  trades fell from about 4,000 to about 250 an hour on 2026-11-06 near
+  17:00 UTC, and our BTC fills fell from about 950 to about 70 a day. The
+  owner kept the strategy unchanged for the run (no quote clamp); the gap
+  study reports this as a finding. AC-H-01's counts (2,000 orders, 200
+  fills) are still met at that rate.
 - **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
   receive time, `N` the first unused index (a restart in the same hour adds
   a file), so `list_partition_files` orders them like the shared capture's

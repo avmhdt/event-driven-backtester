@@ -23,6 +23,7 @@ use crate::binance::HouseCmd;
 use crate::binance::translate::Units;
 use crate::binance::ws::{Backoff, Ended, connect, read_loop_rpc};
 use crate::binance::ws_market::{StreamTiming, sleep_unless};
+use crate::carryover::{SWEEP_LABEL, SweepPhase, SweepReport, deribit_fill};
 use crate::guard::{Credentials, HostGuard};
 use crate::inbound::{ClockSample, Inbound};
 use crate::live_gateway::format_units;
@@ -363,28 +364,34 @@ pub fn spawn_housekeeper(
 ///
 /// # Errors
 /// Transport, credential or venue errors.
-pub fn sweep(rest: &DeribitRest, symbols: &[Units], flatten: bool) -> Result<(u64, u64), LiveError> {
-    let mut cancelled = 0;
-    let mut closed = 0;
+pub fn sweep(
+    rest: &DeribitRest,
+    symbols: &[Units],
+    flatten: bool,
+    phase: SweepPhase,
+) -> Result<SweepReport, LiveError> {
+    let mut r = SweepReport::default();
     for u in symbols {
         let v = result(rest.private("private/cancel_all_by_instrument", &format!("instrument_name={}", u.symbol)))
             .map_err(LiveError::Http)?;
-        cancelled += v.as_u64().unwrap_or(0);
+        r.cancelled += v.as_u64().unwrap_or(0);
         if flatten {
             let p = position(rest, &u.symbol).map_err(LiveError::Http)?;
             if let Some(lots) = edbt_data::instruments::to_units(p.abs(), u.lot).filter(|l| *l > 0) {
                 let path = if p > 0.0 { "private/sell" } else { "private/buy" };
                 let q = format!(
-                    "instrument_name={}&amount={}&type=market&reduce_only=true&label=edbt-sweep",
+                    "instrument_name={}&amount={}&type=market&reduce_only=true&label={SWEEP_LABEL}",
                     u.symbol,
                     format_units(lots, u.lot)
                 );
-                result(rest.private(path, &q)).map_err(LiveError::Http)?;
-                closed += 1;
+                let v = result(rest.private(path, &q)).map_err(LiveError::Http)?;
+                let trades = v.get("trades").and_then(Value::as_array).cloned().unwrap_or_default();
+                r.fills.extend(trades.iter().filter_map(|t| deribit_fill(t, phase)));
+                r.closed += 1;
             }
         }
     }
-    Ok((cancelled, closed))
+    Ok(r)
 }
 
 /// Instrument metadata of `symbols` (`public/get_instrument`; no key needed).

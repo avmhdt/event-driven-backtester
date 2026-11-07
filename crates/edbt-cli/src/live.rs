@@ -22,6 +22,7 @@ use edbt_core::time::compact_utc;
 use edbt_data::instruments::{Instrument, InstrumentTable};
 use edbt_live::binance::rest::RestClient;
 use edbt_live::binance::translate::Units;
+use edbt_live::carryover::{self, CarrySummary, SweepPhase};
 use edbt_live::deribit::rest::DeribitRest;
 use edbt_live::guard::{Credentials, HostGuard};
 use edbt_live::latency::{self, MeasureCfg, Quantiles};
@@ -165,11 +166,7 @@ pub fn plan(cfg: &Config, o: &LiveRunOpts) -> anyhow::Result<LivePlan> {
         insts.iter().map(|i| Units { symbol: i.symbol.clone(), tick: i.tick_size, lot: i.lot_size }).collect();
     let tag = session::session_tag();
     let session_id = format!("{}-{tag}", compact_utc(now));
-    let parent = if live.session_dir == "results/live" {
-        runner::results_dir().join("live")
-    } else {
-        runner::expand(&live.session_dir)
-    };
+    let parent = session_parent(&live);
     let session_dir = parent.join(&session_id);
     let recorder = (o.record || live.record).then(|| {
         let root = record_root(&live.record_dir);
@@ -214,14 +211,20 @@ pub fn execute(p: &LivePlan, strategy: &mut dyn Strategy) -> anyhow::Result<Sess
             }
             let guard = HostGuard::new(&p.opts.live.allowed_hosts)?;
             let rest = session::VenueRest::new(&p.opts, guard)?;
-            let (cancelled, closed) = rest.sweep(&p.opts.symbols, p.cfg.risk.flatten_on_kill)?;
-            if cancelled + closed > 0 {
-                eprintln!("start sweep: cancelled {cancelled} open orders, closed {closed} positions at the venue");
+            let swept = rest.sweep(&p.opts.symbols, p.cfg.risk.flatten_on_kill, SweepPhase::Start)?;
+            if swept.cancelled + swept.closed > 0 {
+                eprintln!(
+                    "start sweep: cancelled {} open orders, closed {} positions at the venue",
+                    swept.cancelled, swept.closed
+                );
             }
             let sio = session::start_io(&p.opts)?;
             let gw = LiveGateway::new(p.opts.api, &p.opts.tag, p.opts.symbols.clone(), sio.workers());
             let mut engine = Engine::new(&p.cfg, p.specs.clone(), Some(&log), LiveSource::new(), gw, WallClock)?;
-            Ok(session::run(&p.opts, sio, &mut engine, strategy, &mut |g: &mut LiveGateway| g.take_submit_walls())?)
+            let mut rep =
+                session::run(&p.opts, sio, &mut engine, strategy, &mut |g: &mut LiveGateway| g.take_submit_walls())?;
+            rep.stats.sweep_fills.splice(0..0, swept.fills);
+            Ok(rep)
         }
         _ => {
             let sio = session::start_io(&p.opts)?;
@@ -295,12 +298,278 @@ pub fn finish(
             &p.opts.live.venue,
         )?;
     }
+    // Sweep fills, priced against the previous session's last mark (start
+    // sweep) or this session's (shutdown sweep).
+    let parent = p.opts.session_dir.parent().unwrap_or_else(|| Path::new("."));
+    let start_refs = previous_marks(parent, &p.session_id, &p.opts.symbols, &p.specs);
+    let end_refs = last_marks(&output.ledger, &p.opts.symbols, &p.session_id);
+    let carry = carryover::price(&stats.sweep_fills, &start_refs, &end_refs);
+    if !carry.is_empty() {
+        carryover::write(&p.opts.session_dir.join("sweep_fills.parquet"), &carry)?;
+    }
     let run = runner::write_outputs(&p.specs, &p.opts.session_dir, &p.session_id, output, wall_s, python_callbacks)?;
-    crate::output::write_json(&p.opts.session_dir.join("live.json"), &stats_json(&stats, p.cfg.run.mode))?;
+    let mut live_json = stats_json(&stats, p.cfg.run.mode);
+    merge_json(&mut live_json, CarrySummary::of(&carry).to_json());
+    crate::output::write_json(&p.opts.session_dir.join("live.json"), &live_json)?;
     if log {
         runner::log_experiment(&runner::results_dir(), &p.cfg, &run)?;
     }
     Ok(LiveResult { run, stats })
+}
+
+fn merge_json(into: &mut serde_json::Value, from: serde_json::Value) {
+    if let (Some(a), serde_json::Value::Object(b)) = (into.as_object_mut(), from) {
+        a.extend(b);
+    }
+}
+
+/// Last ledger mark of each of `symbols` in `ledger`, in quote units.
+#[must_use]
+pub fn last_marks(ledger: &[edbt_core::engine::LedgerRow], symbols: &[Units], session: &str) -> carryover::Refs {
+    let mut out = carryover::Refs::new();
+    for r in ledger {
+        let (Some(u), Some(m)) = (symbols.get(r.symbol as usize), r.mark_ticks) else { continue };
+        out.insert(u.symbol.clone(), (session.to_owned(), m as f64 * u.tick));
+    }
+    out
+}
+
+/// Last ledger mark of each of `symbols` in the newest earlier session under
+/// `parent` that traded it (session ids sort by start time). Sessions of
+/// other symbols, and directories without a readable ledger, are skipped.
+#[must_use]
+pub fn previous_marks(parent: &Path, current: &str, symbols: &[Units], specs: &[SymbolSpec]) -> carryover::Refs {
+    let mut out = carryover::Refs::new();
+    let Ok(rd) = std::fs::read_dir(parent) else { return out };
+    let mut dirs: Vec<String> = rd
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.as_str() < current)
+        .collect();
+    dirs.sort_unstable_by(|a, b| b.cmp(a));
+    for name in dirs.iter().take(2000) {
+        if out.len() == symbols.len() {
+            break;
+        }
+        let Ok(rows) = crate::output::read_ledger(&parent.join(name).join("ledger.parquet"), specs) else { continue };
+        for (sym, v) in last_marks(&rows, symbols, name) {
+            out.entry(sym).or_insert(v);
+        }
+    }
+    out
+}
+
+/// Directory holding the session directories of `live`.
+#[must_use]
+pub fn session_parent(live: &edbt_core::config::LiveCfg) -> PathBuf {
+    if live.session_dir == "results/live" {
+        runner::results_dir().join("live")
+    } else {
+        runner::expand(&live.session_dir)
+    }
+}
+
+/// Start and end (ns) of a session from its `live.json` (finished) or
+/// `status.json` (running: no end).
+fn session_times(dir: &Path) -> Option<(i64, Option<i64>)> {
+    let read =
+        |n: &str| -> Option<serde_json::Value> { serde_json::from_slice(&std::fs::read(dir.join(n)).ok()?).ok() };
+    let t = |v: &serde_json::Value, k: &str| v.get(k)?.as_str().and_then(|s| edbt_core::time::parse_rfc3339(s).ok());
+    if let Some(v) = read("live.json") {
+        return Some((t(&v, "started_utc")?, Some(t(&v, "ended_utc")?)));
+    }
+    read("status.json").and_then(|v| Some((t(&v, "started_utc")?, None)))
+}
+
+/// Which session a sweep fill at `ts` belongs to: a start sweep runs just
+/// before its session starts, a shutdown sweep just after its session ends
+/// (within 3 minutes; the nearer one wins). `sessions` holds (id, start,
+/// end) of the symbol's sessions.
+#[must_use]
+pub fn assign_sweep(ts: i64, sessions: &[(String, i64, Option<i64>)]) -> Option<(String, SweepPhase)> {
+    const NEAR: i64 = 180_000_000_000;
+    let mut best: Option<(i64, String, SweepPhase)> = None;
+    let mut consider = |gap: i64, id: &str, phase: SweepPhase| {
+        if best.as_ref().is_none_or(|b| gap < b.0) {
+            best = Some((gap, id.to_owned(), phase));
+        }
+    };
+    for (id, start, end) in sessions {
+        if (-5_000_000_000..=NEAR).contains(&(start - ts)) {
+            consider((start - ts).abs(), id, SweepPhase::Start);
+        }
+        if let Some(e) = end {
+            if (0..=NEAR).contains(&(ts - e)) {
+                consider(ts - e, id, SweepPhase::End);
+            }
+        }
+    }
+    best.map(|(_, id, ph)| (id, ph))
+}
+
+/// Deribit trades of our sweep orders (label `edbt-sweep`) on `instrument`
+/// between `since_ms` and `until_ms` (read-only trade history).
+///
+/// # Errors
+/// Transport, credential or venue errors.
+pub fn sweep_trades(
+    rest: &DeribitRest,
+    instrument: &str,
+    since_ms: i64,
+    until_ms: i64,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    use serde_json::Value;
+    let mut out = Vec::new();
+    let mut from = since_ms;
+    loop {
+        let q = format!(
+            "instrument_name={instrument}&start_timestamp={from}&end_timestamp={until_ms}&count=1000&sorting=asc"
+        );
+        let rep = rest.private("private/get_user_trades_by_instrument_and_time", &q)?;
+        let v = match edbt_live::deribit::types::rest_result(&rep.body) {
+            Ok(Ok(v)) => v,
+            Ok(Err((c, m))) => bail!("get_user_trades_by_instrument_and_time: {c} {m}"),
+            Err(_) => bail!("get_user_trades_by_instrument_and_time: HTTP {}", rep.status),
+        };
+        let trades = v.get("trades").and_then(Value::as_array).cloned().unwrap_or_default();
+        let last = trades.iter().filter_map(|t| t.get("timestamp").and_then(Value::as_i64)).max();
+        out.extend(
+            trades.into_iter().filter(|t| t.get("label").and_then(Value::as_str) == Some(carryover::SWEEP_LABEL)),
+        );
+        let more = v.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+        match last {
+            Some(l) if more && l >= from => from = l + 1,
+            _ => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Sweep fills found for one session by the backfill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackfillRow {
+    /// Session the fills belong to (empty when none matched).
+    pub session: String,
+    /// Priced fills.
+    pub rows: Vec<carryover::CarryRow>,
+    /// Written, or why not.
+    pub status: String,
+}
+
+/// Find the sweep closes since `since` (ns) in the venue's trade history
+/// and, with `write`, add them to their sessions (`sweep_fills.parquet` and
+/// the `carryover_*` fields of `live.json`). Sessions that already have
+/// `sweep_fills.parquet`, or are still running, are left alone. It only
+/// reads from the venue.
+///
+/// # Errors
+/// Config, credential, transport or file errors.
+pub fn sweep_backfill(
+    cfg: &Config,
+    creds: Option<Credentials>,
+    since: i64,
+    write: bool,
+) -> anyhow::Result<Vec<BackfillRow>> {
+    let live = cfg.live.clone().ok_or_else(|| anyhow!("[live] is required"))?;
+    let api = Api::parse(&live.api)?;
+    if api != Api::Deribit {
+        bail!("the sweep backfill reads Deribit trade history; live.api = {:?}", live.api);
+    }
+    let creds = creds.or_else(|| credentials(api)).ok_or(edbt_live::LiveError::NoCredentials)?;
+    let rest = DeribitRest::new(&live.rest_url, HostGuard::new(&live.allowed_hosts)?, Some(creds))?;
+    let table = InstrumentTable::load(&runner::expand(&cfg.data.instruments))?;
+    let insts = live_instruments(cfg, &table, wall_ns())?;
+    let specs = runner::symbol_specs(cfg, &insts);
+    let units: Vec<Units> =
+        insts.iter().map(|i| Units { symbol: i.symbol.clone(), tick: i.tick_size, lot: i.lot_size }).collect();
+    let parent = session_parent(&live);
+    let mut names: Vec<String> = std::fs::read_dir(&parent)
+        .with_context(|| format!("reading {}", parent.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort_unstable();
+    let mut by_session: std::collections::BTreeMap<String, Vec<carryover::SweepFill>> =
+        std::collections::BTreeMap::new();
+    let mut out = Vec::new();
+    for u in &units {
+        let quoted = format!("\"{}\"", u.symbol);
+        let sessions: Vec<(String, i64, Option<i64>)> = names
+            .iter()
+            .filter(|n| {
+                std::fs::read_to_string(parent.join(n).join("config.resolved.toml")).is_ok_and(|t| t.contains(&quoted))
+            })
+            .filter_map(|n| session_times(&parent.join(n)).map(|(s, e)| (n.clone(), s, e)))
+            .collect();
+        for t in sweep_trades(&rest, &u.symbol, since / 1_000_000, wall_ns() / 1_000_000)? {
+            let ts = t.get("timestamp").and_then(serde_json::Value::as_i64).unwrap_or(0) * 1_000_000;
+            if let Some((id, phase)) = assign_sweep(ts, &sessions) {
+                by_session.entry(id).or_default().extend(carryover::deribit_fill(&t, phase));
+            } else {
+                let lone: Vec<_> = carryover::deribit_fill(&t, SweepPhase::Start).into_iter().collect();
+                out.push(BackfillRow {
+                    session: String::new(),
+                    rows: carryover::price(&lone, &carryover::Refs::new(), &carryover::Refs::new()),
+                    status: "no session within 3 minutes; not assigned".to_owned(),
+                });
+            }
+        }
+    }
+    for (id, fills) in by_session {
+        let dir = parent.join(&id);
+        let start_refs = previous_marks(&parent, &id, &units, &specs);
+        let own = crate::output::read_ledger(&dir.join("ledger.parquet"), &specs).unwrap_or_default();
+        let rows = carryover::price(&fills, &start_refs, &last_marks(&own, &units, &id));
+        let status = if dir.join("sweep_fills.parquet").exists() {
+            "already has sweep_fills.parquet; left alone".to_owned()
+        } else if !dir.join("live.json").exists() {
+            "still running; run the backfill again after it ends".to_owned()
+        } else if write {
+            carryover::write(&dir.join("sweep_fills.parquet"), &rows)?;
+            let p = dir.join("live.json");
+            let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p)?)?;
+            merge_json(&mut v, CarrySummary::of(&rows).to_json());
+            crate::output::write_json(&p, &v)?;
+            "written".to_owned()
+        } else {
+            "dry run (add --write)".to_owned()
+        };
+        out.push(BackfillRow { session: id, rows, status });
+    }
+    Ok(out)
+}
+
+/// `edbt sweep-backfill --config <file> --since <utc> [--write]`.
+///
+/// # Errors
+/// See [`sweep_backfill`].
+pub fn sweep_backfill_cmd(config: &Path, since: &str, write: bool) -> anyhow::Result<i32> {
+    let cfg = runner::resolve(runner::load_config(config, None, &[])?);
+    let since = edbt_core::time::parse_rfc3339(since).map_err(|e| anyhow!("--since {since:?}: {e}"))?;
+    for b in sweep_backfill(&cfg, None, since, write)? {
+        let s = CarrySummary::of(&b.rows);
+        let id = if b.session.is_empty() { "-" } else { b.session.as_str() };
+        println!(
+            "{id:<26} fills {} pnl {:+.6} fees {:.6} unpriced {}  {}",
+            s.trades, s.pnl, s.fees, s.unpriced, b.status
+        );
+        for r in &b.rows {
+            let reference = r
+                .ref_mark
+                .map_or_else(|| "-".to_owned(), |m| format!("{m} ({})", r.ref_session.clone().unwrap_or_default()));
+            println!(
+                "    {} {} {} {} {} @ {} fee {} ref {reference}",
+                edbt_core::time::rfc3339(r.fill.ts_exchange),
+                r.fill.phase.as_str(),
+                r.fill.symbol,
+                r.fill.side,
+                r.fill.qty,
+                r.fill.price,
+                r.fill.fee,
+            );
+        }
+    }
+    Ok(0)
 }
 
 /// Parse `24h`, `10m`, `30s` or plain seconds.

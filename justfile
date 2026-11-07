@@ -184,6 +184,18 @@ gap-stop:
 soak-report from to:
     {{py}} python -m edbt.soak --from {{from}} --to {{to}} --series btc=BTC_USDC-PERPETUAL --series eth=ETH_USDC-PERPETUAL
 
+# The 21-day gap study's uptime against its 95% bar (NFR-11), with venue
+# downtime excluded and included, and sweep carryover:
+#   just gap-report <from-utc> <to-utc>
+gap-report from to:
+    {{py}} python -m edbt.soak --bar 0.95 --from {{from}} --to {{to}} --series btc=BTC_USDC-PERPETUAL --series eth=ETH_USDC-PERPETUAL
+
+# Add the sweep closes since <utc> to their sessions (read-only at the
+# venue; drop --write for a dry run):  just sweep-backfill <since-utc>
+sweep-backfill since:
+    {{py}} edbt sweep-backfill --config configs/gap_study_testnet.toml --since {{since}} --write
+    {{py}} edbt sweep-backfill --config configs/gap_study_testnet_eth.toml --since {{since}} --write
+
 # Status of the running gap-study sessions.
 gap-status:
     @for f in $(ls -t "{{data_root}}"/live/sessions/*/status.json 2>/dev/null | head -2); do echo "$f"; cat "$f"; done

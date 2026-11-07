@@ -173,3 +173,62 @@ fn venue_status_reports_venue_downtime() {
     assert_eq!(live::venue_status(&cfg, creds).unwrap().exit_code(), 5);
     m.stop();
 }
+
+#[test]
+fn start_sweep_closes_are_priced_and_backfilled() {
+    use edbt_live::carryover::{self, SweepPhase};
+    use edbt_live::deribit::rest::DeribitRest;
+    use edbt_live::guard::HostGuard;
+
+    let m = DeribitMock::start(DeribitMockCfg::default()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config("testnet", &m, tmp.path(), "flatten_on_kill = true");
+    let first = run(&cfg, &opts(3));
+    let first_id = first.run.out_dir.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(m.positions(), vec![0, 0]);
+
+    // A position the first session did not close (as when it ends during an
+    // outage): the next session's start sweep closes it.
+    let creds = opts(1).creds.unwrap();
+    let rest = DeribitRest::new(&m.rest_url(), HostGuard::new(&["127.0.0.1"]).unwrap(), Some(creds.clone())).unwrap();
+    rest.private("private/buy", "instrument_name=BTC_USDC-PERPETUAL&amount=0.002&type=market&label=left").unwrap();
+    assert_eq!(m.positions(), vec![2, 0]);
+    let second = run(&cfg, &opts(3));
+    let dir = second.run.out_dir.clone();
+    let rows = carryover::read(&dir.join("sweep_fills.parquet")).unwrap();
+    let start: Vec<_> = rows.iter().filter(|r| r.fill.phase == SweepPhase::Start).collect();
+    assert_eq!(start.len(), 1, "{rows:?}");
+    let r = start[0];
+    assert_eq!((r.fill.side.as_str(), r.fill.qty), ("sell", 0.002));
+    assert_eq!(r.ref_session.as_deref(), Some(first_id.as_str()));
+    let mark = r.ref_mark.unwrap();
+    let want = 0.002 * (r.fill.price - mark) - r.fill.fee;
+    assert!((r.pnl.unwrap() - want).abs() < 1e-9, "{r:?}");
+    assert!(r.fill.fee > 0.0, "market close pays the taker fee");
+    let live_json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("live.json")).unwrap()).unwrap();
+    assert_eq!(live_json["carryover_trades"].as_u64(), Some(rows.len() as u64));
+
+    // The backfill finds the same close in the trade history: left alone
+    // while the file exists, rebuilt once it is gone.
+    let found = live::sweep_backfill(&cfg, Some(creds.clone()), 0, true).unwrap();
+    let mine = found.iter().find(|b| dir.ends_with(&b.session)).unwrap();
+    assert!(mine.status.starts_with("already has"), "{found:?}");
+    std::fs::remove_file(dir.join("sweep_fills.parquet")).unwrap();
+    let found = live::sweep_backfill(&cfg, Some(creds), 0, true).unwrap();
+    let mine = found.iter().find(|b| dir.ends_with(&b.session)).unwrap();
+    assert_eq!(mine.status, "written", "{found:?}");
+    assert_eq!(carryover::read(&dir.join("sweep_fills.parquet")).unwrap(), rows);
+    m.stop();
+}
+
+#[test]
+fn sweep_fills_are_assigned_to_the_nearest_session() {
+    let s = 1_000_000_000_i64;
+    let sessions = vec![("a".to_owned(), 0, Some(100 * s)), ("b".to_owned(), 160 * s, None)];
+    // Just after a's end: a's shutdown sweep.
+    assert_eq!(live::assign_sweep(101 * s, &sessions), Some(("a".to_owned(), edbt_live::carryover::SweepPhase::End)));
+    // Just before b's start: b's start sweep.
+    assert_eq!(live::assign_sweep(159 * s, &sessions), Some(("b".to_owned(), edbt_live::carryover::SweepPhase::Start)));
+    // Far from every session: none.
+    assert_eq!(live::assign_sweep(10_000 * s, &sessions), None);
+}

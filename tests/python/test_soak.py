@@ -101,4 +101,33 @@ def test_running_session_uses_status_json(tmp_path: Path, capsys: pytest.Capture
     argv = ["--from", "2026-11-01T00:00:00Z", "--to", "2026-11-01T12:00:00Z", "--series", f"btc={sym}"]
     assert soak.main([*argv, "--data-root", str(tmp_path), "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out[0]["uptime_excl_venue"] == pytest.approx(0.995) and out[0]["passes_99"]
+    assert out[0]["uptime_excl_venue"] == pytest.approx(0.995) and out[0]["passes"]
+    assert soak.main([*argv, "--data-root", str(tmp_path), "--bar", "0.999"]) == 1
+
+
+def test_gap_study_bar_and_carryover(tmp_path: Path) -> None:
+    sym = "BTC_USDC-PERPETUAL"
+    # 96% up over the day: fails the soak's 99%, passes the gap study's 95%.
+    _session(
+        tmp_path,
+        "a",
+        sym,
+        "2026-11-06T00:00:00Z",
+        "2026-11-07T00:00:00Z",
+        0.96,
+        carryover_pnl=-0.012,
+        carryover_fees=0.004,
+        carryover_trades=2,
+        carryover_unpriced=1,
+    )
+    soak_r = _report(tmp_path, "btc", sym, 24)
+    assert not soak_r.passes
+    live = tmp_path / "live"
+    gap = soak.series_report(
+        "btc", sym, T0, T0 + 86400, live / "sessions", live / "venue_downtime", None, None, soak.GAP_STUDY_BAR
+    )
+    assert gap.passes and gap.bar == 0.95
+    assert (gap.carryover_trades, gap.carryover_unpriced) == (2, 1)
+    assert gap.carryover_pnl == pytest.approx(-0.012) and gap.carryover_fees == pytest.approx(0.004)
+    md = soak.report_md([gap])
+    assert "bar 95%" in md and "2 (1 unpriced) | -0.012000 | 0.004000" in md

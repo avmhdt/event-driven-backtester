@@ -121,6 +121,8 @@ struct State {
     venue_state: String,
     /// Answer every REST call with this HTTP status (a 5xx outage).
     http_error: Option<u16>,
+    /// Every trade, for `private/get_user_trades_by_instrument_and_time`.
+    history: Vec<Value>,
 }
 
 fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -209,6 +211,7 @@ impl State {
                         "price": px(price, ins.tick), "amount": px(qty, ins.lot), "fee": fee, "fee_currency": "USDC",
                         "liquidity": if maker { "M" } else { "T" }, "direction": if o.buy { "buy" } else { "sell" } });
         self.push_user(&format!("user.trades.{}.raw", ins.name), &json!([t.clone()]));
+        self.history.push(t.clone());
         let oj = self.order_json(&o);
         self.push_user(&format!("user.orders.{}.raw", ins.name), &oj);
         t
@@ -477,6 +480,21 @@ fn call(
             st.orders.retain(|o| o.state == "open");
             Ok(json!({ "order": order, "trades": trades }))
         }
+        "private/get_user_trades_by_instrument_and_time" => {
+            let name = q(p, "instrument_name");
+            let from = q(p, "start_timestamp").parse::<i64>().unwrap_or(0);
+            let to = q(p, "end_timestamp").parse::<i64>().unwrap_or(i64::MAX);
+            let trades: Vec<Value> = st
+                .history
+                .iter()
+                .filter(|t| {
+                    let ts = t.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                    t.get("instrument_name").and_then(Value::as_str) == Some(name.as_str()) && ts >= from && ts <= to
+                })
+                .cloned()
+                .collect();
+            Ok(json!({ "trades": trades, "has_more": false }))
+        }
         _ => Err((-32601, format!("mock: method not found {method}"))),
     }
 }
@@ -626,6 +644,7 @@ impl DeribitMock {
             requests: BTreeMap::new(),
             venue_state: "open".to_owned(),
             http_error: None,
+            history: Vec::new(),
             cfg: cfg.clone(),
         };
         for (i, ins) in cfg.instruments.iter().enumerate() {

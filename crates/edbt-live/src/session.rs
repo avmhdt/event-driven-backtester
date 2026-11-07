@@ -44,6 +44,7 @@ use crate::binance::translate::{Translator, Units, venue_client_id};
 use crate::binance::types::{MS, MarketMsg, UserMsg, parse_market, parse_user};
 use crate::binance::ws_market::{StreamTiming, connections};
 use crate::binance::{HouseCmd, spawn_housekeeper, ws_market, ws_user};
+use crate::carryover::{SweepFill, SweepPhase, SweepReport};
 use crate::deribit::rest::DeribitRest;
 use crate::deribit::translate::DeribitTranslator;
 use crate::deribit::types::Rpc;
@@ -133,6 +134,8 @@ pub struct LiveStats {
     /// Positions the shutdown sweep closed at the venue (fills that arrived
     /// after the session's own flatten).
     pub swept_positions: u64,
+    /// Fills of the start and shutdown sweeps' closing orders.
+    pub sweep_fills: Vec<SweepFill>,
     /// Live-path latency inside the engine (NFR-03), ns.
     pub internal_latency: Vec<i64>,
     /// Order latency rows of this session.
@@ -216,14 +219,15 @@ impl VenueRest {
     }
 
     /// Cancel the symbols' open orders and, with `flatten`, close their
-    /// positions at the venue (session start and shutdown).
+    /// positions at the venue (session start and shutdown), keeping the
+    /// closing fills (see [`crate::carryover`]).
     ///
     /// # Errors
     /// Transport, credential or venue errors.
-    pub fn sweep(&self, symbols: &[Units], flatten: bool) -> Result<(u64, u64), LiveError> {
+    pub fn sweep(&self, symbols: &[Units], flatten: bool, phase: SweepPhase) -> Result<SweepReport, LiveError> {
         match self {
-            Self::Binance(r) => venue_sweep(r, symbols, flatten),
-            Self::Deribit(r) => crate::deribit::streams::sweep(r, symbols, flatten),
+            Self::Binance(r) => venue_sweep(r, symbols, flatten, phase),
+            Self::Deribit(r) => crate::deribit::streams::sweep(r, symbols, flatten, phase),
         }
     }
 }
@@ -1075,15 +1079,19 @@ pub fn disk_state(p: &Path) -> Option<(f64, f64)> {
 ///
 /// # Errors
 /// Transport or credential errors.
-pub fn venue_sweep(rest: &RestClient, symbols: &[Units], flatten: bool) -> Result<(u64, u64), LiveError> {
-    let mut cancelled = 0;
-    let mut closed = 0;
+pub fn venue_sweep(
+    rest: &RestClient,
+    symbols: &[Units],
+    flatten: bool,
+    phase: SweepPhase,
+) -> Result<SweepReport, LiveError> {
+    let mut r = SweepReport::default();
     for u in symbols {
         let rep = rest.signed(Method::Get, "/fapi/v1/openOrders", &format!("symbol={}", u.symbol))?;
         let n = crate::binance::types::parse_open_orders(&rep.body).map(|v| v.len()).unwrap_or(0);
         if n > 0 {
             rest.signed(Method::Delete, "/fapi/v1/allOpenOrders", &format!("symbol={}", u.symbol))?;
-            cancelled += n as u64;
+            r.cancelled += n as u64;
         }
     }
     if flatten {
@@ -1093,14 +1101,35 @@ pub fn venue_sweep(rest: &RestClient, symbols: &[Units], flatten: bool) -> Resul
             let Some(lots) = to_units(amt.abs(), u.lot).filter(|l| *l > 0) else { continue };
             let side = if amt > 0.0 { "SELL" } else { "BUY" };
             let p = format!(
-                "symbol={sym}&side={side}&type=MARKET&quantity={}&reduceOnly=true&newOrderRespType=ACK",
+                "symbol={sym}&side={side}&type=MARKET&quantity={}&reduceOnly=true&newOrderRespType=RESULT",
                 format_units(lots, u.lot)
             );
-            rest.signed(Method::Post, "/fapi/v1/order", &p)?;
-            closed += 1;
+            let rep = rest.signed(Method::Post, "/fapi/v1/order", &p)?;
+            r.fills.extend(binance_sweep_fill(&rep.body, &sym, phase));
+            r.closed += 1;
         }
     }
-    Ok((cancelled, closed))
+    Ok(r)
+}
+
+/// The fill of a Binance `newOrderRespType=RESULT` market order. The reply
+/// carries the average price and executed quantity but not the commission,
+/// so the fee is marked unknown.
+fn binance_sweep_fill(body: &str, symbol: &str, phase: SweepPhase) -> Option<SweepFill> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let num = |k: &str| v.get(k).and_then(serde_json::Value::as_str).and_then(|s| s.parse::<f64>().ok());
+    let qty = num("executedQty").filter(|q| *q > 0.0)?;
+    Some(SweepFill {
+        phase,
+        ts_exchange: v.get("updateTime").and_then(serde_json::Value::as_i64).unwrap_or(0) * 1_000_000,
+        symbol: symbol.to_owned(),
+        side: v.get("side").and_then(serde_json::Value::as_str).unwrap_or("").to_ascii_lowercase(),
+        qty,
+        price: num("avgPrice")?,
+        fee: 0.0,
+        fee_known: false,
+        trade_id: v.get("orderId").map(ToString::to_string).unwrap_or_default(),
+    })
 }
 
 /// Run a session on `engine` until its duration ends, `o.stop` is set, or
@@ -1266,10 +1295,11 @@ pub fn run<G: Gateway>(
     }
     d.stats.ended = ended;
     if o.mode == Mode::Testnet {
-        match d.io.rest.sweep(&o.symbols, o.flatten_at_end) {
-            Ok((n, p)) => {
-                d.stats.leftover_orders = n;
-                d.stats.swept_positions = p;
+        match d.io.rest.sweep(&o.symbols, o.flatten_at_end, SweepPhase::End) {
+            Ok(r) => {
+                d.stats.leftover_orders = r.cancelled;
+                d.stats.swept_positions = r.closed;
+                d.stats.sweep_fills.extend(r.fills);
             }
             Err(e) => tracing::error!(error = %e, "shutdown sweep failed"),
         }

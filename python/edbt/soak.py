@@ -1,15 +1,19 @@
 r"""Uptime of a gap-study series over a window: the soak and 21-day reports.
 
-Owner ruling of 2026-11-05: the uptime judged against 99% measures our
-system while the venue is open. Venue downtime is only what the venue
+Owner ruling of 2026-11-05: the judged uptime measures our system while
+the venue is open. Venue downtime is only what the venue
 itself reports (instrument not open, index locked) or HTTP 5xx from it, as
 logged by ``deploy/gap_supervisor.sh`` in
 ``$DATA_ROOT/live/venue_downtime/<name>.csv``; it is excluded from that
 figure and reported on its own. Everything else (our process, our network,
 the ISP) counts against us. Both figures are reported:
 
-- ``uptime_excl_venue = up / (window - venue_down)``: judged against 99%.
+- ``uptime_excl_venue = up / (window - venue_down)``: the judged figure.
 - ``uptime_incl_venue = up / window``.
+
+The bar (``--bar``) is 99% for the M5 24 h soak and 95% for the 21-day gap
+study (NFR-11, AC-H-01). Trades closed by the start or shutdown sweep are
+summed from each session's ``carryover_*`` fields (``sweep_fills.parquet``).
 
 ``up`` is each session's ``uptime_fraction`` (every stream up and every book
 in sync) times its time inside the window.
@@ -32,7 +36,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-UPTIME_BAR = 0.99
+SOAK_BAR = 0.99
+GAP_STUDY_BAR = 0.95
 
 
 def parse_utc(text: str) -> float:
@@ -65,6 +70,11 @@ class SeriesReport:
     drops: int = 0
     fills: int = 0
     recon_violations: int = 0
+    bar: float = SOAK_BAR
+    carryover_pnl: float = 0.0
+    carryover_fees: float = 0.0
+    carryover_trades: int = 0
+    carryover_unpriced: int = 0
 
     @property
     def window_s(self) -> float:
@@ -73,7 +83,7 @@ class SeriesReport:
 
     @property
     def uptime_excl_venue(self) -> float:
-        """Uptime with venue downtime excluded (judged against 99%)."""
+        """Uptime with venue downtime excluded (the judged figure)."""
         open_s = self.window_s - self.venue_down_s
         return self.up_s / open_s if open_s > 0 else 1.0
 
@@ -89,8 +99,8 @@ class SeriesReport:
 
     @property
     def passes(self) -> bool:
-        """Uptime excluding venue downtime meets the 99% bar."""
-        return self.uptime_excl_venue >= UPTIME_BAR
+        """Uptime excluding venue downtime meets the bar."""
+        return self.uptime_excl_venue >= self.bar
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready summary."""
@@ -104,12 +114,17 @@ class SeriesReport:
             "our_down_s": round(self.our_down_s, 1),
             "uptime_excl_venue": round(self.uptime_excl_venue, 6),
             "uptime_incl_venue": round(self.uptime_incl_venue, 6),
-            "passes_99": self.passes,
+            "bar": self.bar,
+            "passes": self.passes,
             "venue_downtime": [{"start": a, "end": b, "reason": r} for a, b, r in self.venue_intervals],
             "kills": dict(self.kills),
             "drops": self.drops,
             "fills": self.fills,
             "venue_recon_violations": self.recon_violations,
+            "carryover_pnl": self.carryover_pnl,
+            "carryover_fees": self.carryover_fees,
+            "carryover_trades": self.carryover_trades,
+            "carryover_unpriced": self.carryover_unpriced,
         }
 
 
@@ -145,10 +160,11 @@ def series_report(
     downtime_dir: Path,
     state_dir: Path | None = None,
     now: float | None = None,
+    bar: float = SOAK_BAR,
 ) -> SeriesReport:
     """Uptime of series `name` (trading `symbol`) over [start, end)."""
     end = min(end, now) if now is not None else end
-    r = SeriesReport(name=name, symbol=symbol, start=start, end=end)
+    r = SeriesReport(name=name, symbol=symbol, start=start, end=end, bar=bar)
     runs = sorted(p for p in sessions_dir.iterdir() if p.is_dir()) if sessions_dir.exists() else []
     for run in runs:
         if symbol not in _session_symbols(run):
@@ -167,6 +183,10 @@ def series_report(
         r.drops += sum(int(v) for v in (d.get("drops") or {}).values())
         r.fills += int((d.get("fills_by_symbol") or {}).get(symbol, 0))
         r.recon_violations += int(d.get("venue_recon_violations", 0))
+        r.carryover_pnl += float(d.get("carryover_pnl", 0.0))
+        r.carryover_fees += float(d.get("carryover_fees", 0.0))
+        r.carryover_trades += int(d.get("carryover_trades", 0))
+        r.carryover_unpriced += int(d.get("carryover_unpriced", 0))
     intervals: list[tuple[float, float, str]] = []
     path = downtime_dir / f"{name}.csv"
     if path.exists():
@@ -191,16 +211,21 @@ def _fmt(t: float) -> str:
 
 def report_md(reports: list[SeriesReport]) -> str:
     """Markdown table of the series reports."""
+    bar = reports[0].bar if reports else SOAK_BAR
     lines = [
-        "| Series | Window h | Uptime excl. venue downtime (judged, bar 99%) | Uptime incl. venue downtime "
-        "| Venue downtime min | Our downtime min | Sessions | Drops | Fills | Recon violations |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        f"| Series | Window h | Uptime excl. venue downtime (judged, bar {bar:.0%}) "
+        "| Uptime incl. venue downtime | Venue downtime min | Our downtime min "
+        "| Sessions | Drops | Fills | Recon violations "
+        "| Sweep closes | Carryover P&L | Carryover fees |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in reports:
         lines.append(
             f"| {r.name} ({r.symbol}) | {r.window_s / 3600:.2f} | {r.uptime_excl_venue:.4%} "
             f"{'pass' if r.passes else 'FAIL'} | {r.uptime_incl_venue:.4%} | {r.venue_down_s / 60:.1f} "
-            f"| {r.our_down_s / 60:.1f} | {r.sessions} | {r.drops} | {r.fills} | {r.recon_violations} |"
+            f"| {r.our_down_s / 60:.1f} | {r.sessions} | {r.drops} | {r.fills} | {r.recon_violations} "
+            f"| {r.carryover_trades} ({r.carryover_unpriced} unpriced) | {r.carryover_pnl:+.6f} "
+            f"| {r.carryover_fees:.6f} |"
         )
     for r in reports:
         for a, b, why in r.venue_intervals:
@@ -218,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         "--series", action="append", required=True, help="name=SYMBOL, e.g. btc=BTC_USDC-PERPETUAL"
     )
     p.add_argument("--data-root", type=Path, default=root)
+    p.add_argument("--bar", type=float, default=SOAK_BAR, help="judged uptime bar: 0.99 soak, 0.95 gap study")
     p.add_argument("--json", action="store_true", help="print JSON instead of Markdown")
     a = p.parse_args(argv)
     live = a.data_root / "live"
@@ -235,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                 live / "venue_downtime",
                 live / "state",
                 now,
+                a.bar,
             )
         )
     if a.json:
