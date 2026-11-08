@@ -436,7 +436,9 @@ release of each crate that still builds on Rust 1.85.
   read-only), assigns each `edbt-sweep` fill to the session that started
   within 3 minutes after it (start sweep) or ended within 3 minutes before
   it (shutdown sweep), and writes the same files for finished sessions that
-  lack them. Binance replies carry no commission, so Binance sweep fees are
+  lack them. Deribit serves only about the last day of trades from its
+  recent records; older ones need `historical=true`, so the backfill reads
+  both and merges them by trade id. Binance replies carry no commission, so Binance sweep fees are
   marked unknown. The strategy is unchanged.
 - **2026-11-07 (M5) Gap-study finding: inventory pinned at the cap.**
   `mm_simple` with `skew_ticks_per_unit = 10000` shifts both quotes by one

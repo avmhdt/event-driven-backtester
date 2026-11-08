@@ -408,7 +408,10 @@ pub fn assign_sweep(ts: i64, sessions: &[(String, i64, Option<i64>)]) -> Option<
 }
 
 /// Deribit trades of our sweep orders (label `edbt-sweep`) on `instrument`
-/// between `since_ms` and `until_ms` (read-only trade history).
+/// between `since_ms` and `until_ms` (read-only trade history). Deribit
+/// serves about the last day from its recent records and older trades only
+/// with `historical=true` (seen on the testnet 2026-11-08), so both are
+/// read and merged by trade id.
 ///
 /// # Errors
 /// Transport, credential or venue errors.
@@ -418,12 +421,38 @@ pub fn sweep_trades(
     since_ms: i64,
     until_ms: i64,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut all = trade_pages(rest, instrument, since_ms, until_ms, true)?;
+    all.extend(trade_pages(rest, instrument, since_ms, until_ms, false)?);
+    Ok(merge_trades(all))
+}
+
+/// Trades without duplicates (same `trade_id`), oldest first.
+#[must_use]
+pub fn merge_trades(trades: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    use serde_json::Value;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out: Vec<Value> = trades
+        .into_iter()
+        .filter(|t| seen.insert(t.get("trade_id").map(Value::to_string).unwrap_or_default()))
+        .collect();
+    out.sort_by_key(|t| t.get("timestamp").and_then(Value::as_i64).unwrap_or(0));
+    out
+}
+
+fn trade_pages(
+    rest: &DeribitRest,
+    instrument: &str,
+    since_ms: i64,
+    until_ms: i64,
+    historical: bool,
+) -> anyhow::Result<Vec<serde_json::Value>> {
     use serde_json::Value;
     let mut out = Vec::new();
     let mut from = since_ms;
     loop {
         let q = format!(
-            "instrument_name={instrument}&start_timestamp={from}&end_timestamp={until_ms}&count=1000&sorting=asc"
+            "instrument_name={instrument}&start_timestamp={from}&end_timestamp={until_ms}&count=1000&sorting=asc\
+             &historical={historical}"
         );
         let rep = rest.private("private/get_user_trades_by_instrument_and_time", &q)?;
         let v = match edbt_live::deribit::types::rest_result(&rep.body) {
