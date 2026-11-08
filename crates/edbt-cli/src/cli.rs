@@ -29,6 +29,9 @@ pub enum Command {
     /// Is the venue open? Prints one line; exits 0 open, 5 venue down
     /// (venue-reported or HTTP 5xx), 6 unknown (counts against us).
     VenueStatus(VenueStatusArgs),
+    /// Add sweep closes since a time to their sessions' P&L and fees, from
+    /// the venue's trade history (read-only; a dry run without --write).
+    SweepBackfill(SweepBackfillArgs),
     /// Latency measurement and fitting.
     #[command(subcommand)]
     Latency(LatencyCmd),
@@ -149,6 +152,20 @@ pub struct VenueStatusArgs {
     /// Live config (venue, REST URL, symbols).
     #[arg(long)]
     pub config: PathBuf,
+}
+
+/// `edbt sweep-backfill`.
+#[derive(Debug, Args)]
+pub struct SweepBackfillArgs {
+    /// Live config (venue, symbols, session directory).
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Earliest trade time, RFC 3339 UTC.
+    #[arg(long)]
+    pub since: String,
+    /// Write sweep_fills.parquet and the carryover fields of live.json.
+    #[arg(long)]
+    pub write: bool,
 }
 
 /// `edbt kill`.
@@ -393,6 +410,7 @@ where
         Command::Live(a) => crate::live::live_cmd(&a),
         Command::Kill(a) => crate::live::kill_cmd(&a),
         Command::VenueStatus(a) => crate::live::venue_status_cmd(&a.config),
+        Command::SweepBackfill(a) => crate::live::sweep_backfill_cmd(&a.config, &a.since, a.write),
         Command::Latency(LatencyCmd::Measure { config, n, interval_ms, channel, report }) => {
             crate::live::measure_cmd(&config, n, interval_ms, &channel, report.as_deref())
         }

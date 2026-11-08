@@ -137,10 +137,16 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
   `$DATA_ROOT/live/venue_downtime/<name>.csv`. Another failure (exit 1) is
   retried after 1, 2, ... 10 minutes; ten in a row with the venue open stop
   the series. Remove `STOPPED` to let the watchdog start the series again.
+- Sweep carryover (owner decision of 2026-11-07): a session's start and
+  shutdown sweeps write `sweep_fills.parquet` and the `carryover_*` fields of
+  `live.json`. `just sweep-backfill <since-utc>` adds closes from before
+  that change, read from the venue's trade history.
 - Uptime, both ways (owner decision of 2026-11-05, `docs/decisions.md`):
-  `just soak-report <from-utc> <to-utc>` prints, per series, the uptime
-  excluding venue downtime (judged against 99%) and including it, venue and
-  own downtime, drops, fills and venue reconciliation violations.
+  `just soak-report <from-utc> <to-utc>` (M5 soak, bar 99%) and
+  `just gap-report <from-utc> <to-utc>` (21-day run, bar 95%, NFR-11) print,
+  per series, the uptime excluding venue downtime (judged) and including
+  it, venue and own downtime, drops, fills, venue reconciliation
+  violations and the sweep carryover.
   `deploy/edbt-gap@.service` is the systemd alternative (needs sudo).
 - The end time must fall before 2026-12-06 (Windows Update paused until
   then; no reboot during the run).

@@ -6,6 +6,7 @@
 //! `edbt-strategies`. Every outbound URL passes the testnet host guard.
 
 pub mod binance;
+pub mod carryover;
 pub mod deribit;
 pub mod guard;
 pub mod inbound;
