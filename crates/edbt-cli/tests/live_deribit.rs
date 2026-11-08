@@ -232,3 +232,12 @@ fn sweep_fills_are_assigned_to_the_nearest_session() {
     // Far from every session: none.
     assert_eq!(live::assign_sweep(10_000 * s, &sessions), None);
 }
+
+#[test]
+fn recent_and_historical_trades_merge_by_trade_id() {
+    use serde_json::json;
+    let t = |id: &str, ts: i64| json!({ "trade_id": id, "timestamp": ts, "label": "edbt-sweep" });
+    let merged = live::merge_trades(vec![t("B", 20), t("A", 10), t("B", 20), t("C", 30), t("A", 10)]);
+    let ids: Vec<&str> = merged.iter().map(|v| v["trade_id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["A", "B", "C"]);
+}
