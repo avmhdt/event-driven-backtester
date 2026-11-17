@@ -11,6 +11,12 @@ ignore = [
   # atomics, so it is never built for x86_64 Linux or Windows. postcard 1.x
   # has no release without it.
   { id = "RUSTSEC-2023-0089", reason = "unmaintained, target-gated, not compiled on supported targets" },
+  # chrono is marked unmaintained (notice published 2026-11; no
+  # vulnerability, "no safe upgrade"). No edbt crate uses it directly: it is
+  # a required dependency of arrow-array and parquet, so removing it means
+  # replacing Arrow and Parquet. Revisit by 2027-02-17, or as soon as
+  # arrow-rs moves off chrono (jiff or time).
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained notice only; transitive via arrow-array/parquet; revisit by 2027-02-17" },
 ]
 
 [licenses]
