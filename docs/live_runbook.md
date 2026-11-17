@@ -137,6 +137,15 @@ with the same seed. `just verify-ac-h-06` runs it for every gap-study session.
   `$DATA_ROOT/live/venue_downtime/<name>.csv`. Another failure (exit 1) is
   retried after 1, 2, ... 10 minutes; ten in a row with the venue open stop
   the series. Remove `STOPPED` to let the watchdog start the series again.
+- Stopping: use `just gap-stop`, which writes the STOP files and a kill
+  control file so each session ends through the kill switch with its
+  flatten and output files. Do not stop sessions with SIGTERM: the Python
+  live path has no SIGTERM handler and dies without them.
+- Run reports from cron: `deploy/gap_run_report.sh` reads `START` and `END`
+  from `$DATA_ROOT/live/state/run2.env` and writes each milestone report
+  once (day 1, days 1-7, day 7, days 1-14, days 1-21, at the 95% bar) to
+  `$DATA_ROOT/live/reports/run2/`. Crontab line:
+  `*/15 * * * * bash $HOME/deploy/edbt-reports/gap_run_report.sh # edbt-gap-report`.
 - Sweep carryover (owner decision of 2026-11-07): a session's start and
   shutdown sweeps write `sweep_fills.parquet` and the `carryover_*` fields of
   `live.json`. `just sweep-backfill <since-utc>` adds closes from before

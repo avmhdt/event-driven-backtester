@@ -455,6 +455,30 @@ release of each crate that still builds on Rust 1.85.
   owner kept the strategy unchanged for the run (no quote clamp); the gap
   study reports this as a finding. AC-H-01's counts (2,000 orders, 200
   fills) are still met at that rate.
+- **2026-11-17 (M5) Run 1 closed as a failure; a fresh 21-day window (owner
+  decision of 2026-11-17, "Restart a fresh 21 days").** The host was down
+  2026-11-11 07:00-19:40 (PC crash) and 2026-11-12 19:03 to 11-15 17:45
+  (D: failures, 70.7 h), so run 1 had 86.3 h of our own downtime against an
+  allowance of about 25 h and could not reach 95%. It was closed on
+  2026-11-17 at 19:50 UTC and is reported as a failure with its outage
+  breakdown in `reports/gap_run1.md`. Run 2 is a new 21-day window on the
+  same code (deploy a15a65c): 2026-11-17 19:55 UTC to 2026-12-08 19:55 UTC
+  (cron end), judged at 95% with the venue-downtime ruling of 2026-11-05.
+  The Windows Update hold runs to about 2026-12-22, and the owner's
+  5-minute WSL watchdog task starts WSL after a host restart. The owner
+  edited the crontab (the permission check refused it here).
+  `deploy/gap_run_report.sh` runs from cron every 15 minutes and writes the
+  day-1, days 1-7, day-7, days 1-14 and days 1-21 reports once each to
+  `$DATA_ROOT/live/reports/run2/`, so an app crash cannot stop them. No
+  threshold changed.
+- **2026-11-17 (M5) Finding: SIGTERM ends the Python live path without its
+  flatten.** The gap configs run `mm_simple` through the Python
+  `edbt live` path, which installs no SIGTERM handler (the Rust CLI does).
+  Closing run 1 with SIGTERM killed both sessions at once: no flatten, no
+  ledger or `live.json`, and the venue kept BTC -10 and ETH +10 lots until
+  run 2's start sweep closed them. Until that path handles SIGTERM, a
+  series is stopped with `just gap-stop` (STOP files and a kill control
+  file, so the session ends through the kill switch).
 - **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
   receive time, `N` the first unused index (a restart in the same hour adds
   a file), so `list_partition_files` orders them like the shared capture's
