@@ -479,6 +479,22 @@ release of each crate that still builds on Rust 1.85.
   run 2's start sweep closed them. Until that path handles SIGTERM, a
   series is stopped with `just gap-stop` (STOP files and a kill control
   file, so the session ends through the kill switch).
+- **2026-11-24 (M5) Run 2 closed as a failure; run 3, a fresh 21 days
+  (owner decision of 2026-11-24, "Fresh 21 days from now").** Drive G:
+  failed writes on 2026-11-20 at 23:20-23:26 UTC and WSL's virtual disk was
+  reported corrupted; WSL was down until 11-21 17:00, again 17:10-18:55,
+  and was shut down on purpose from 11-21 20:21 to 11-22 19:10 to protect
+  G: until it was fixed. Run 2 had 43.0 h of our own downtime against an
+  allowance of about 25 h (best case 91.4%), so it was closed on
+  2026-11-25 at 00:03:30 UTC through the kill switch (both sessions
+  flattened) and is reported as a failure in `reports/gap_run2.md`. Run 3
+  is a fresh 21-day window on the same code (deploy a15a65c): 2026-11-25
+  00:05 UTC to 2026-12-16 00:05 UTC (cron end), judged at 95% with the
+  venue-downtime ruling, ending before the Windows Update pause ends
+  (2026-12-22 19:52 UTC). The owner edited the crontab. The report job now
+  reads `RUN`, `START` and `END` from `live/state/run.env` and writes to
+  `live/reports/<RUN>/`; it also marks windows that miss the bar as written
+  (it had rewritten them every 15 minutes). No threshold changed.
 - **2026-11-03 (M5) Recorder layout.** Hourly `part-HH-rN.parquet` files by
   receive time, `N` the first unused index (a restart in the same hour adds
   a file), so `list_partition_files` orders them like the shared capture's
